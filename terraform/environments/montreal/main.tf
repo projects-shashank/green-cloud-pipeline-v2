@@ -15,7 +15,7 @@ provider "google" {
 module "gke" {
   source             = "../../modules/gke-cluster"
   project_id         = var.project_id
-  region             = var.region
+  region             = var.zone
   cluster_name       = var.cluster_name
   machine_type       = "e2-medium"
   enable_autoscaling = true
