@@ -19,7 +19,6 @@ resource "google_container_node_pool" "primary_nodes" {
   cluster  = google_container_cluster.primary.name
   project  = var.project_id
 
-  # Only Montreal uses autoscaling — controlled by variables
   dynamic "autoscaling" {
     for_each = var.enable_autoscaling ? [1] : []
     content {
@@ -28,11 +27,12 @@ resource "google_container_node_pool" "primary_nodes" {
     }
   }
 
-  # Fixed node count used when autoscaling is disabled (Mumbai)
   node_count = var.enable_autoscaling ? null : var.node_count
 
   node_config {
     machine_type = var.machine_type
+    disk_size_gb = 50
+    disk_type    = "pd-standard"
     oauth_scopes = [
       "https://www.googleapis.com/auth/cloud-platform"
     ]

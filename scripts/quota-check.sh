@@ -1,7 +1,4 @@
 #!/bin/bash
-# Run this before every terraform apply
-# Hard limit: 12 vCPUs across all regions
-
 echo "=== GCP CPU Quota Check ==="
 gcloud compute project-info describe \
   --format="json(quotas)" | python3 -c "
