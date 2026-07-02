@@ -38,7 +38,7 @@ import redis
 import requests
 from google.cloud import pubsub_v1, bigquery, storage
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "shared"))
+sys.path.insert(0, "/app/shared")
 from lineage import now_utc_iso
 from energy_estimator import estimate_energy_kwh
 from carbon_accounting import compute_carbon_emitted, compute_carbon_saved

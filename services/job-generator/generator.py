@@ -23,7 +23,7 @@ import random
 import logging
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "shared"))
+sys.path.insert(0, "/app/shared")
 
 from lineage import generate_job_id, now_utc_iso
 from model_catalog import (

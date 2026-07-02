@@ -49,7 +49,7 @@ import numpy as np
 import requests
 from flask import Flask, jsonify
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "shared"))
+sys.path.insert(0, "/app/shared")
 from lineage import now_utc_iso
 
 logging.basicConfig(
