@@ -8,7 +8,7 @@ if [ -z "$EMAPS_KEY" ]; then echo "ERROR: ELECTRICITY_MAPS_API_KEY not set"; exi
 echo "=== Run 3: Green + Predictive Mode ==="
 echo "Started at: $(date -u)"
 
-# ── Mumbai — workers first ────────────────────────────────────────────────────
+# ── Step 1: Deploy ALL workers (NO generators yet) ────────────────────────────
 gcloud container clusters get-credentials gcp-mumbai \
   --zone asia-south1-a --project ${PROJECT} --quiet
 
@@ -30,7 +30,6 @@ YAML
 
 kubectl apply -f infra/k8s/mumbai/worker.yaml
 
-# ── Montreal — worker first, no HPA ──────────────────────────────────────────
 gcloud container clusters get-credentials gcp-montreal \
   --zone northamerica-northeast1-a --project ${PROJECT} --quiet
 
@@ -38,28 +37,30 @@ kubectl delete hpa worker-montreal-hpa -n green-cloud --ignore-not-found
 kubectl apply -f infra/k8s/montreal/redis.yaml
 kubectl apply -f infra/k8s/montreal/worker-deployment.yaml
 
-# ── Wait for workers BEFORE starting generators ───────────────────────────────
-echo "=== Waiting for workers to be ready ==="
+# ── Step 2: Wait for ALL workers on BOTH clusters ────────────────────────────
+echo "=== Waiting for Mumbai workers ==="
 gcloud container clusters get-credentials gcp-mumbai \
   --zone asia-south1-a --project ${PROJECT} --quiet
-kubectl rollout status deployment/redis               -n green-cloud --timeout=180s
-kubectl rollout status deployment/carbon-forecaster   -n green-cloud --timeout=180s
+kubectl rollout status deployment/redis                -n green-cloud --timeout=180s
+kubectl rollout status deployment/carbon-forecaster    -n green-cloud --timeout=180s
 kubectl rollout status deployment/admission-controller -n green-cloud --timeout=180s
-kubectl rollout status deployment/worker-mumbai       -n green-cloud --timeout=180s
+kubectl rollout status deployment/worker-mumbai        -n green-cloud --timeout=180s
 
+echo "=== Waiting for Montreal workers ==="
 gcloud container clusters get-credentials gcp-montreal \
   --zone northamerica-northeast1-a --project ${PROJECT} --quiet
-kubectl rollout status deployment/redis           -n green-cloud --timeout=180s
-kubectl rollout status deployment/worker-montreal -n green-cloud --timeout=180s
+kubectl rollout status deployment/redis            -n green-cloud --timeout=180s
+kubectl rollout status deployment/worker-montreal  -n green-cloud --timeout=180s
 
-echo "Workers ready. Waiting 10s for subscriptions to stabilize..."
-sleep 10
+echo "All workers running. Waiting 20s for Pub/Sub streaming pulls to establish..."
+sleep 20
 
-# ── Start generators ──────────────────────────────────────────────────────────
-echo "Starting job generators..."
+# ── Step 3: Start BOTH generators simultaneously ──────────────────────────────
+echo "Starting job generators on both clusters simultaneously..."
 
 gcloud container clusters get-credentials gcp-mumbai \
   --zone asia-south1-a --project ${PROJECT} --quiet
+
 kubectl apply -f - << YAML
 $(cat infra/k8s/mumbai/job-generator.yaml \
   | sed 's/value: "baseline"/value: "green"/')
@@ -67,6 +68,7 @@ YAML
 
 gcloud container clusters get-credentials gcp-montreal \
   --zone northamerica-northeast1-a --project ${PROJECT} --quiet
+
 kubectl apply -f - << YAML
 $(cat infra/k8s/montreal/job-generator.yaml \
   | sed 's/value: "baseline"/value: "green"/')
@@ -91,8 +93,8 @@ kubectl get pods -n green-cloud
 
 echo ""
 echo "=== Run 3: Green + Predictive active ==="
-echo "Mumbai:   120 jobs/min | ADMISSION_MODE=green | SCALING_MODE=predictive"
-echo "Montreal: 160 jobs/min | ADMISSION_MODE=green | Forecaster scales BEFORE green window"
+echo "Mumbai:   80 jobs/min  | ADMISSION_MODE=green | SCALING_MODE=predictive"
+echo "Montreal: 90 jobs/min  | ADMISSION_MODE=green | Forecaster scales BEFORE green window"
 echo ""
 echo "To trigger simulation:"
 echo "  kubectl config use-context gke_${PROJECT}_asia-south1-a_gcp-mumbai"
@@ -102,4 +104,4 @@ echo "    -H 'Content-Type: application/json' \\"
 echo "    -d '{\"duration_seconds\": 600, \"type\": \"approaching\"}'"
 echo ""
 echo "Started at: $(date -u)"
-echo "Run for 5 minutes then: bash scripts/check-results.sh"
+echo "Wait 1 minute then: bash scripts/check-results.sh"

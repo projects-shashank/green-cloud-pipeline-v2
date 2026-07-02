@@ -8,7 +8,9 @@ if [ -z "$EMAPS_KEY" ]; then echo "ERROR: ELECTRICITY_MAPS_API_KEY not set"; exi
 echo "=== Run 1: Baseline Mode ==="
 echo "Started at: $(date -u)"
 
-# ── Mumbai — start workers and admission controller FIRST, no generator yet ──
+# ── Step 1: Deploy ALL workers and supporting pods (NO generators yet) ────────
+
+# Mumbai
 gcloud container clusters get-credentials gcp-mumbai \
   --zone asia-south1-a --project ${PROJECT} --quiet
 
@@ -27,7 +29,7 @@ YAML
 
 kubectl apply -f infra/k8s/mumbai/worker.yaml
 
-# ── Montreal — start worker FIRST, no generator yet ──────────────────────────
+# Montreal
 gcloud container clusters get-credentials gcp-montreal \
   --zone northamerica-northeast1-a --project ${PROJECT} --quiet
 
@@ -35,30 +37,36 @@ kubectl delete hpa worker-montreal-hpa -n green-cloud --ignore-not-found
 kubectl apply -f infra/k8s/montreal/redis.yaml
 kubectl apply -f infra/k8s/montreal/worker-deployment.yaml
 
-# ── Wait for all workers to be ready BEFORE starting generators ──────────────
+# ── Step 2: Wait for ALL workers on BOTH clusters to be ready ────────────────
 echo ""
-echo "=== Waiting for workers to be ready ==="
+echo "=== Waiting for Mumbai workers ==="
 gcloud container clusters get-credentials gcp-mumbai \
   --zone asia-south1-a --project ${PROJECT} --quiet
-kubectl rollout status deployment/redis               -n green-cloud --timeout=180s
-kubectl rollout status deployment/carbon-forecaster   -n green-cloud --timeout=180s
+kubectl rollout status deployment/redis                -n green-cloud --timeout=180s
+kubectl rollout status deployment/carbon-forecaster    -n green-cloud --timeout=180s
 kubectl rollout status deployment/admission-controller -n green-cloud --timeout=180s
-kubectl rollout status deployment/worker-mumbai       -n green-cloud --timeout=180s
+kubectl rollout status deployment/worker-mumbai        -n green-cloud --timeout=180s
 
+echo ""
+echo "=== Waiting for Montreal workers ==="
 gcloud container clusters get-credentials gcp-montreal \
   --zone northamerica-northeast1-a --project ${PROJECT} --quiet
-kubectl rollout status deployment/redis           -n green-cloud --timeout=180s
-kubectl rollout status deployment/worker-montreal -n green-cloud --timeout=180s
+kubectl rollout status deployment/redis            -n green-cloud --timeout=180s
+kubectl rollout status deployment/worker-montreal  -n green-cloud --timeout=180s
 
+# ── Step 3: Wait for Pub/Sub streaming pulls to establish ────────────────────
+# rollout status = pod running, NOT = worker actively consuming from Pub/Sub
+# The streaming pull client needs ~10s to connect and start pulling
 echo ""
-echo "Workers ready. Waiting 10s for Pub/Sub subscriptions to stabilize..."
-sleep 10
+echo "All workers running. Waiting 20s for Pub/Sub streaming pulls to establish..."
+sleep 20
 
-# ── NOW start job generators ──────────────────────────────────────────────────
-echo "Starting job generators..."
+# ── Step 4: Start BOTH generators simultaneously ─────────────────────────────
+echo "Starting job generators on both clusters simultaneously..."
 
 gcloud container clusters get-credentials gcp-mumbai \
   --zone asia-south1-a --project ${PROJECT} --quiet
+
 kubectl apply -f - << YAML
 $(cat infra/k8s/mumbai/job-generator.yaml \
   | sed 's/value: "green"/value: "baseline"/' \
@@ -67,18 +75,22 @@ YAML
 
 gcloud container clusters get-credentials gcp-montreal \
   --zone northamerica-northeast1-a --project ${PROJECT} --quiet
+
 kubectl apply -f - << YAML
 $(cat infra/k8s/montreal/job-generator.yaml \
   | sed 's/value: "green"/value: "baseline"/' \
   | sed 's/value: "predictive"/value: "reactive"/')
 YAML
 
+# Wait for both generators to be running
+echo "Waiting for generators to start..."
 kubectl rollout status deployment/job-generator -n green-cloud --timeout=60s
+
 gcloud container clusters get-credentials gcp-mumbai \
   --zone asia-south1-a --project ${PROJECT} --quiet
 kubectl rollout status deployment/job-generator -n green-cloud --timeout=60s
 
-# ── Status ────────────────────────────────────────────────────────────────────
+# ── Step 5: Status ────────────────────────────────────────────────────────────
 echo ""
 echo "=== Mumbai pods ==="
 gcloud container clusters get-credentials gcp-mumbai \
@@ -93,9 +105,9 @@ kubectl get pods -n green-cloud
 
 echo ""
 echo "=== Run 1: Baseline active ==="
-echo "Mumbai:   120 jobs/min | ADMISSION_MODE=baseline | No scaling"
-echo "Montreal: 160 jobs/min | ADMISSION_MODE=baseline | No scaling"
-echo "Processing: interactive 0.5-2s | batch 2-8s"
+echo "Mumbai:   80 jobs/min  | ADMISSION_MODE=baseline | No scaling"
+echo "Montreal: 90 jobs/min  | ADMISSION_MODE=baseline | No scaling"
+echo "Processing: interactive 100-500ms | batch 500-2000ms"
 echo "SLA threshold: 5000ms"
 echo "Started at: $(date -u)"
-echo "Run for 5 minutes then: bash scripts/check-results.sh"
+echo "Wait 1 minute then: bash scripts/check-results.sh"
