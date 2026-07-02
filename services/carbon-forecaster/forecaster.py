@@ -421,7 +421,6 @@ if __name__ == "__main__":
 
 # ── Simulation controls ───────────────────────────────────────────────────────
 
-}
 
 
 @app.route("/admin/simulate-green-window", methods=["POST"])
