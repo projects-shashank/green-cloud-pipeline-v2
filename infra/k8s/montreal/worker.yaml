@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-montreal
+  namespace: green-cloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker-montreal
+  template:
+    metadata:
+      labels:
+        app: worker-montreal
+    spec:
+      serviceAccountName: green-cloud-sa
+      containers:
+      - name: worker
+        image: northamerica-northeast1-docker.pkg.dev/green-cloud-pipeline-v2/green-cloud-pipeline/worker:latest
+        env:
+        - name: PROJECT_ID
+          value: "green-cloud-pipeline-v2"
+        - name: REGION
+          value: "montreal"
+        - name: SUBSCRIPTION_ID
+          value: "montreal-jobs-sub"
+        - name: CARBON_FORECASTER_URL
+          value: "http://carbon-forecaster.green-cloud.svc.cluster.local:8080/carbon"
+        - name: GCS_BUCKET
+          value: "green-cloud-pipeline-v2-data-lake"
+        - name: REDIS_HOST
+          value: "redis"
+        - name: SLA_THRESHOLD_MS
+          value: "5000"
+        resources:
+          requests:
+            cpu: "700m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker-montreal-hpa
+  namespace: green-cloud
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker-montreal
+  minReplicas: 1
+  maxReplicas: 2
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80

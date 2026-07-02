@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: job-generator
+  namespace: green-cloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: job-generator
+  template:
+    metadata:
+      labels:
+        app: job-generator
+    spec:
+      serviceAccountName: green-cloud-sa
+      containers:
+      - name: job-generator
+        image: asia-south1-docker.pkg.dev/green-cloud-pipeline-v2/green-cloud-pipeline/job-generator:latest
+        env:
+        - name: PROJECT_ID
+          value: "green-cloud-pipeline-v2"
+        - name: REGION
+          value: "mumbai"
+        - name: ADMISSION_MODE
+          value: "baseline"
+        - name: SCALING_MODE
+          value: "reactive"
+        - name: JOBS_PER_MINUTE
+          value: "30"
+        - name: INTERACTIVE_RATIO
+          value: "0.7"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
