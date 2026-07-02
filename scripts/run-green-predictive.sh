@@ -39,49 +39,7 @@ kubectl apply -f - << YAML
 $(cat infra/k8s/montreal/job-generator.yaml | sed 's/value: "baseline"/value: "green"/')
 YAML
 # Apply worker WITHOUT HPA
-kubectl apply -f - << YAML
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: worker-montreal
-  namespace: green-cloud
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: worker-montreal
-  template:
-    metadata:
-      labels:
-        app: worker-montreal
-    spec:
-      serviceAccountName: green-cloud-sa
-      containers:
-      - name: worker
-        image: northamerica-northeast1-docker.pkg.dev/${PROJECT}/green-cloud-pipeline/worker:latest
-        env:
-        - name: PROJECT_ID
-          value: "${PROJECT}"
-        - name: REGION
-          value: "montreal"
-        - name: SUBSCRIPTION_ID
-          value: "montreal-jobs-sub"
-        - name: CARBON_FORECASTER_URL
-          value: "http://35.200.248.98:8080/carbon"
-        - name: GCS_BUCKET
-          value: "${PROJECT}-data-lake"
-        - name: REDIS_HOST
-          value: "redis"
-        - name: SLA_THRESHOLD_MS
-          value: "5000"
-        resources:
-          requests:
-            cpu: "600m"
-            memory: "512Mi"
-          limits:
-            cpu: "900m"
-            memory: "1Gi"
-YAML
+kubectl apply -f infra/k8s/montreal/worker-deployment.yaml
 
 echo "=== Waiting for pods ==="
 gcloud container clusters get-credentials gcp-mumbai --zone asia-south1-a --project ${PROJECT} --quiet

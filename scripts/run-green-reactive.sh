@@ -36,7 +36,8 @@ kubectl apply -f - << YAML
 $(cat infra/k8s/montreal/job-generator.yaml | sed 's/value: "baseline"/value: "green"/' | sed 's/value: "predictive"/value: "reactive"/')
 YAML
 # Apply full worker.yaml including HPA
-kubectl apply -f infra/k8s/montreal/worker.yaml
+kubectl apply -f infra/k8s/montreal/worker-deployment.yaml
+kubectl apply -f infra/k8s/montreal/worker-hpa.yaml
 
 echo "=== Waiting for pods ==="
 gcloud container clusters get-credentials gcp-mumbai --zone asia-south1-a --project ${PROJECT} --quiet
