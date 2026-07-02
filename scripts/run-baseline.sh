@@ -8,6 +8,7 @@ if [ -z "$EMAPS_KEY" ]; then echo "ERROR: ELECTRICITY_MAPS_API_KEY not set"; exi
 echo "=== Run 1: Baseline Mode ==="
 echo "Started at: $(date -u)"
 
+# ── Mumbai ────────────────────────────────────────────────────────────────────
 gcloud container clusters get-credentials gcp-mumbai \
   --zone asia-south1-a --project ${PROJECT} --quiet
 
@@ -17,57 +18,72 @@ kubectl create secret generic electricity-maps-secret \
 
 kubectl apply -f infra/k8s/mumbai/redis.yaml
 kubectl apply -f infra/k8s/mumbai/carbon-forecaster.yaml
+
 kubectl apply -f - << YAML
-$(cat infra/k8s/mumbai/job-generator.yaml | sed 's/value: "green"/value: "baseline"/' | sed 's/value: "predictive"/value: "reactive"/')
+$(cat infra/k8s/mumbai/job-generator.yaml \
+  | sed 's/value: "green"/value: "baseline"/' \
+  | sed 's/value: "predictive"/value: "reactive"/')
 YAML
+
 kubectl apply -f - << YAML
-$(cat infra/k8s/mumbai/admission-controller.yaml | sed 's/value: "green"/value: "baseline"/' | sed 's/value: "predictive"/value: "reactive"/')
+$(cat infra/k8s/mumbai/admission-controller.yaml \
+  | sed 's/value: "green"/value: "baseline"/' \
+  | sed 's/value: "predictive"/value: "reactive"/')
 YAML
+
 kubectl apply -f infra/k8s/mumbai/worker.yaml
 
+# ── Montreal ──────────────────────────────────────────────────────────────────
 gcloud container clusters get-credentials gcp-montreal \
   --zone northamerica-northeast1-a --project ${PROJECT} --quiet
 
-# Remove HPA — no scaling in baseline
 kubectl delete hpa worker-montreal-hpa -n green-cloud --ignore-not-found
 
 kubectl apply -f infra/k8s/montreal/redis.yaml
+
 kubectl apply -f - << YAML
-$(cat infra/k8s/montreal/job-generator.yaml | sed 's/value: "green"/value: "baseline"/' | sed 's/value: "predictive"/value: "reactive"/')
-YAML
-# Apply worker without HPA section
-kubectl apply -f - << YAML
-$(cat infra/k8s/montreal/worker.yaml | grep -v "^---" | grep -v "HorizontalPodAutoscaler" | head -$(grep -n "HorizontalPodAutoscaler" infra/k8s/montreal/worker.yaml | cut -d: -f1 | head -1 | xargs -I{} expr {} - 2 || echo 999))
+$(cat infra/k8s/montreal/job-generator.yaml \
+  | sed 's/value: "green"/value: "baseline"/' \
+  | sed 's/value: "predictive"/value: "reactive"/')
 YAML
 
-echo "=== Waiting for pods ==="
-gcloud container clusters get-credentials gcp-mumbai --zone asia-south1-a --project ${PROJECT} --quiet
-kubectl rollout status deployment/redis -n green-cloud --timeout=180s
-kubectl rollout status deployment/carbon-forecaster -n green-cloud --timeout=180s
-kubectl rollout status deployment/job-generator -n green-cloud --timeout=180s
+kubectl apply -f infra/k8s/montreal/worker-deployment.yaml
+
+# ── Wait ──────────────────────────────────────────────────────────────────────
+echo "=== Waiting for Mumbai pods ==="
+gcloud container clusters get-credentials gcp-mumbai \
+  --zone asia-south1-a --project ${PROJECT} --quiet
+kubectl rollout status deployment/redis              -n green-cloud --timeout=180s
+kubectl rollout status deployment/carbon-forecaster  -n green-cloud --timeout=180s
+kubectl rollout status deployment/job-generator      -n green-cloud --timeout=180s
 kubectl rollout status deployment/admission-controller -n green-cloud --timeout=180s
-kubectl rollout status deployment/worker-mumbai -n green-cloud --timeout=180s
+kubectl rollout status deployment/worker-mumbai      -n green-cloud --timeout=180s
 
-gcloud container clusters get-credentials gcp-montreal --zone northamerica-northeast1-a --project ${PROJECT} --quiet
-kubectl rollout status deployment/redis -n green-cloud --timeout=180s
-kubectl rollout status deployment/job-generator -n green-cloud --timeout=180s
+echo "=== Waiting for Montreal pods ==="
+gcloud container clusters get-credentials gcp-montreal \
+  --zone northamerica-northeast1-a --project ${PROJECT} --quiet
+kubectl rollout status deployment/redis           -n green-cloud --timeout=180s
+kubectl rollout status deployment/job-generator   -n green-cloud --timeout=180s
 kubectl rollout status deployment/worker-montreal -n green-cloud --timeout=180s
 
+# ── Status ────────────────────────────────────────────────────────────────────
 echo ""
 echo "=== Mumbai pods ==="
-gcloud container clusters get-credentials gcp-mumbai --zone asia-south1-a --project ${PROJECT} --quiet
+gcloud container clusters get-credentials gcp-mumbai \
+  --zone asia-south1-a --project ${PROJECT} --quiet
 kubectl get pods -n green-cloud
 
 echo ""
 echo "=== Montreal pods ==="
-gcloud container clusters get-credentials gcp-montreal --zone northamerica-northeast1-a --project ${PROJECT} --quiet
+gcloud container clusters get-credentials gcp-montreal \
+  --zone northamerica-northeast1-a --project ${PROJECT} --quiet
 kubectl get pods -n green-cloud
 
 echo ""
 echo "=== Run 1: Baseline active ==="
 echo "Mumbai:   120 jobs/min | ADMISSION_MODE=baseline | No scaling"
 echo "Montreal: 160 jobs/min | ADMISSION_MODE=baseline | No scaling"
-echo "Processing delays: interactive 0.5-2s | batch 2-8s"
+echo "Processing: interactive 0.5-2s | batch 2-8s"
 echo "SLA threshold: 5000ms"
 echo "Started at: $(date -u)"
-echo "Run for 30 minutes then: bash scripts/check-results.sh"
+echo "Run for 5 minutes then: bash scripts/check-results.sh"
