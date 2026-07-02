@@ -33,7 +33,7 @@ Environment variables:
   PORT                        HTTP server port (default: 8080)
   MONTREAL_WORKER_NAMESPACE   k8s namespace (default: green-cloud)
   MONTREAL_WORKER_DEPLOYMENT  k8s deployment name (default: worker-montreal)
-  PREDICTIVE_REPLICAS         replicas on green window (default: 3)
+  PREDICTIVE_REPLICAS         replicas on green window (default: 2)
 """
 
 import os
@@ -43,11 +43,10 @@ import logging
 import threading
 import statistics
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from datetime import datetime, timezone
-from datetime import datetime, timezone
 import requests
 from flask import Flask, jsonify, request
 
@@ -75,15 +74,14 @@ POLL_INTERVAL       = int(get_env("POLL_INTERVAL_SECONDS", "300"))
 PORT                = int(get_env("PORT", "8080"))
 MONTREAL_NAMESPACE  = get_env("MONTREAL_WORKER_NAMESPACE", "green-cloud")
 MONTREAL_DEPLOYMENT = get_env("MONTREAL_WORKER_DEPLOYMENT", "worker-montreal")
-PREDICTIVE_REPLICAS = int(get_env("PREDICTIVE_REPLICAS", "3"))
+PREDICTIVE_REPLICAS = int(get_env("PREDICTIVE_REPLICAS", "2"))
 
 ZONES = {
     "mumbai":   "IN-SO",
     "montreal": "CA-QC",
 }
 
-# Rolling history — 24h at 5min intervals = 288 readings max
-HISTORY_SIZE = 288
+HISTORY_SIZE = 288  # 24h at 5min intervals
 
 # ── State ─────────────────────────────────────────────────────────────────────
 
@@ -116,7 +114,6 @@ _currently_scaled_up = False
 # ── Electricity Maps API ──────────────────────────────────────────────────────
 
 def fetch_live(zone: str) -> float:
-    """Fetch current carbon intensity for a zone."""
     resp = requests.get(
         "https://api.electricitymap.org/v3/carbon-intensity/latest",
         headers={"auth-token": API_KEY},
@@ -128,10 +125,6 @@ def fetch_live(zone: str) -> float:
 
 
 def fetch_history(zone: str) -> list:
-    """
-    Fetch 24h historical carbon intensity for a zone.
-    Returns list of (datetime_str, intensity) tuples sorted oldest first.
-    """
     resp = requests.get(
         "https://api.electricitymap.org/v3/carbon-intensity/history",
         headers={"auth-token": API_KEY},
@@ -146,15 +139,11 @@ def fetch_history(zone: str) -> list:
 # ── Threshold computation ─────────────────────────────────────────────────────
 
 def compute_montreal_thresholds(history: deque) -> dict | None:
-    """
-    Green window threshold:
-        green_threshold = min(24h) + std(24h)
-    """
     if len(history) < 2:
         return None
-    values      = [v for _, v in history]
-    h_min       = min(values)
-    h_std       = statistics.stdev(values) if len(values) > 1 else 0.0
+    values = [v for _, v in history]
+    h_min  = min(values)
+    h_std  = statistics.stdev(values) if len(values) > 1 else 0.0
     return {
         "green_threshold": round(h_min + h_std, 2),
         "history_min":     round(h_min, 2),
@@ -164,10 +153,6 @@ def compute_montreal_thresholds(history: deque) -> dict | None:
 
 
 def compute_mumbai_thresholds(history: deque) -> dict | None:
-    """
-    Migration threshold:
-        migration_threshold = mean(24h)
-    """
     if len(history) < 2:
         return None
     values = [v for _, v in history]
@@ -183,20 +168,13 @@ def compute_mumbai_thresholds(history: deque) -> dict | None:
 # ── Green window approach detection ──────────────────────────────────────────
 
 def is_green_window_approaching(history: deque, green_threshold: float) -> bool:
-    """
-    Proximity + slope check:
-      1. Current within 15% above green_threshold
-      2. Short-term slope (last 6 readings) is flat or negative
-    """
     if len(history) < 6:
         return False
     recent  = [v for _, v in list(history)[-6:]]
     current = recent[-1]
-
     near_threshold = current <= green_threshold * 1.15
     slope          = np.polyfit(np.arange(len(recent)), recent, 1)[0]
     not_rising     = slope <= 0
-
     if near_threshold and not_rising:
         log.info(
             "Green window approaching: current=%.1f threshold=%.1f slope=%.3f",
@@ -295,11 +273,6 @@ def compute_montreal_state(intensity: float) -> dict:
 # ── Startup: load 24h history immediately ────────────────────────────────────
 
 def load_history_on_startup() -> None:
-    """
-    Called once at startup before the poller loop begins.
-    Fetches 24h historical data for both regions so thresholds
-    are available immediately — no warm-up period needed.
-    """
     log.info("Loading 24h history on startup...")
     for region, zone in ZONES.items():
         try:
@@ -308,8 +281,7 @@ def load_history_on_startup() -> None:
                 _history[region].append((ts, intensity))
             _fallback[region] = readings[-1][1] if readings else None
             log.info(
-                "Loaded %d historical readings for %s "
-                "(range %.0f-%.0f gCO2/kWh)",
+                "Loaded %d historical readings for %s (range %.0f-%.0f gCO2/kWh)",
                 len(readings), region,
                 min(r[1] for r in readings),
                 max(r[1] for r in readings),
@@ -320,7 +292,6 @@ def load_history_on_startup() -> None:
 # ── Poller ────────────────────────────────────────────────────────────────────
 
 def poll_once() -> None:
-    """Fetch live intensity for both regions and update state."""
     results = {}
     errors  = []
 
@@ -369,13 +340,6 @@ app = Flask(__name__)
 
 @app.route("/carbon", methods=["GET"])
 def carbon():
-    """
-    Return carbon state for both regions.
-    Routing logic (enforced in admission controller):
-        if montreal.in_green_window → migrate (maximise carbon saving)
-        elif mumbai.is_dirty        → migrate
-        else                        → process locally
-    """
     with _state_lock:
         state = dict(_state)
     if state["mumbai"] is None or state["montreal"] is None:
@@ -393,64 +357,31 @@ def health():
     return jsonify({"status": "ok", "last_updated": last})
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
-
-def main():
-    log.info(
-        "Carbon forecaster starting — scaling_mode=%s port=%d poll_interval=%ds",
-        SCALING_MODE, PORT, POLL_INTERVAL,
-    )
-
-    # Load 24h history immediately on startup
-    load_history_on_startup()
-
-    # Run one live poll immediately so state is populated before HTTP server starts
-    poll_once()
-
-    # Start background poller
-    t = threading.Thread(target=poller_loop, daemon=True)
-    t.start()
-
-    # Start HTTP server
-    app.run(host="0.0.0.0", port=PORT)
-
-
-if __name__ == "__main__":
-    main()
-
-
-# ── Simulation controls ───────────────────────────────────────────────────────
-
-
-
 @app.route("/admin/simulate-green-window", methods=["POST"])
 def simulate_green_window():
     """
     Force a green window simulation for testing predictive scaling.
     POST JSON: {"duration_seconds": 300, "type": "approaching" or "green_window"}
 
-    type=approaching  → sets approaching=True, in_green_window=False
-                        forecaster will trigger proactive scale-up
-    type=green_window → sets in_green_window=True
-                        admission controller will redirect all batch jobs
+    type=approaching  → sets approaching=True — triggers proactive scale-up
+    type=green_window → sets in_green_window=True — triggers job redirection
     """
-    data             = request.get_json() or {}
-    duration         = int(data.get("duration_seconds", 300))
-    sim_type         = data.get("type", "approaching")
+    data     = request.get_json() or {}
+    duration = int(data.get("duration_seconds", 300))
+    sim_type = data.get("type", "approaching")
 
     _simulation["active"] = True
     _simulation["until"]  = time.time() + duration
     _simulation["type"]   = sim_type
 
     log.info(
-        "Simulation started: type=%s duration=%ds until=%s",
+        "Simulation started: type=%s duration=%ds",
         sim_type, duration,
-        datetime.fromtimestamp(_simulation["until"], tz=timezone.utc).isoformat()
     )
     return jsonify({
-        "status":    "ok",
-        "type":      sim_type,
-        "duration":  duration,
+        "status":       "ok",
+        "type":         sim_type,
+        "duration":     duration,
         "active_until": datetime.fromtimestamp(
             _simulation["until"], tz=timezone.utc
         ).isoformat()
@@ -459,18 +390,36 @@ def simulate_green_window():
 
 @app.route("/admin/simulation-status", methods=["GET"])
 def simulation_status():
-    """Check current simulation status."""
     active = _simulation["active"] and time.time() < _simulation["until"]
     return jsonify({
-        "active":   active,
-        "type":     _simulation["type"] if active else None,
+        "active":           active,
+        "type":             _simulation["type"] if active else None,
         "remaining_seconds": max(0, int(_simulation["until"] - time.time())) if active else 0,
     })
 
 
 @app.route("/admin/stop-simulation", methods=["POST"])
 def stop_simulation():
-    """Stop any active simulation."""
     _simulation["active"] = False
     log.info("Simulation stopped")
     return jsonify({"status": "ok"})
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def main():
+    log.info(
+        "Carbon forecaster starting — scaling_mode=%s port=%d poll_interval=%ds",
+        SCALING_MODE, PORT, POLL_INTERVAL,
+    )
+    load_history_on_startup()
+    poll_once()
+
+    t = threading.Thread(target=poller_loop, daemon=True)
+    t.start()
+
+    app.run(host="0.0.0.0", port=PORT)
+
+
+if __name__ == "__main__":
+    main()
