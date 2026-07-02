@@ -140,7 +140,7 @@ def compute_montreal_thresholds(history: deque) -> dict | None:
         Adding one std gives a realistic buffer above that minimum
         so we don't only trigger on the absolute lowest reading.
     """
-    if len(history) < 12:  # need at least 1h of data
+    if len(history) < 2:  # need at least 1h of data
         return None
 
     values = [v for _, v in history]
