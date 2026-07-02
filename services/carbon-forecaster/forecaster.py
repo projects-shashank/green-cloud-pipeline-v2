@@ -47,6 +47,7 @@ from pathlib import Path
 
 import numpy as np
 from datetime import datetime, timezone
+from datetime import datetime, timezone
 import requests
 from flask import Flask, jsonify, request
 
@@ -410,3 +411,65 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ── Simulation controls ───────────────────────────────────────────────────────
+
+_simulation = {
+    "active":     False,
+    "until":      0.0,
+    "type":       None,  # "approaching" or "green_window"
+}
+
+
+@app.route("/admin/simulate-green-window", methods=["POST"])
+def simulate_green_window():
+    """
+    Force a green window simulation for testing predictive scaling.
+    POST JSON: {"duration_seconds": 300, "type": "approaching" or "green_window"}
+
+    type=approaching  → sets approaching=True, in_green_window=False
+                        forecaster will trigger proactive scale-up
+    type=green_window → sets in_green_window=True
+                        admission controller will redirect all batch jobs
+    """
+    data             = request.get_json() or {}
+    duration         = int(data.get("duration_seconds", 300))
+    sim_type         = data.get("type", "approaching")
+
+    _simulation["active"] = True
+    _simulation["until"]  = time.time() + duration
+    _simulation["type"]   = sim_type
+
+    log.info(
+        "Simulation started: type=%s duration=%ds until=%s",
+        sim_type, duration,
+        datetime.fromtimestamp(_simulation["until"], tz=timezone.utc).isoformat()
+    )
+    return jsonify({
+        "status":    "ok",
+        "type":      sim_type,
+        "duration":  duration,
+        "active_until": datetime.fromtimestamp(
+            _simulation["until"], tz=timezone.utc
+        ).isoformat()
+    })
+
+
+@app.route("/admin/simulation-status", methods=["GET"])
+def simulation_status():
+    """Check current simulation status."""
+    active = _simulation["active"] and time.time() < _simulation["until"]
+    return jsonify({
+        "active":   active,
+        "type":     _simulation["type"] if active else None,
+        "remaining_seconds": max(0, int(_simulation["until"] - time.time())) if active else 0,
+    })
+
+
+@app.route("/admin/stop-simulation", methods=["POST"])
+def stop_simulation():
+    """Stop any active simulation."""
+    _simulation["active"] = False
+    log.info("Simulation stopped")
+    return jsonify({"status": "ok"})
