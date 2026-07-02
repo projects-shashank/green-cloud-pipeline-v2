@@ -27,7 +27,7 @@ spec:
         - name: SCALING_MODE
           value: "reactive"
         - name: JOBS_PER_MINUTE
-          value: "30"
+          value: "120"
         - name: INTERACTIVE_RATIO
           value: "0.7"
         resources:
