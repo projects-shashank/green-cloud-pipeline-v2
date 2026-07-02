@@ -30,7 +30,8 @@ module "artifact_registry" {
 }
 
 module "pubsub" {
-  source       = "../../modules/pubsub"
-  project_id   = var.project_id
-  topic_prefix = "mumbai"
+  source               = "../../modules/pubsub"
+  project_id           = var.project_id
+  topic_prefix         = "mumbai"
+  create_process_topic = true
 }
