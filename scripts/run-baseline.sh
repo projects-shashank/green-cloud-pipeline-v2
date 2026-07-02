@@ -8,7 +8,7 @@ if [ -z "$EMAPS_KEY" ]; then echo "ERROR: ELECTRICITY_MAPS_API_KEY not set"; exi
 echo "=== Run 1: Baseline Mode ==="
 echo "Started at: $(date -u)"
 
-# ── Mumbai ────────────────────────────────────────────────────────────────────
+# ── Mumbai — start workers and admission controller FIRST, no generator yet ──
 gcloud container clusters get-credentials gcp-mumbai \
   --zone asia-south1-a --project ${PROJECT} --quiet
 
@@ -20,12 +20,6 @@ kubectl apply -f infra/k8s/mumbai/redis.yaml
 kubectl apply -f infra/k8s/mumbai/carbon-forecaster.yaml
 
 kubectl apply -f - << YAML
-$(cat infra/k8s/mumbai/job-generator.yaml \
-  | sed 's/value: "green"/value: "baseline"/' \
-  | sed 's/value: "predictive"/value: "reactive"/')
-YAML
-
-kubectl apply -f - << YAML
 $(cat infra/k8s/mumbai/admission-controller.yaml \
   | sed 's/value: "green"/value: "baseline"/' \
   | sed 's/value: "predictive"/value: "reactive"/')
@@ -33,38 +27,56 @@ YAML
 
 kubectl apply -f infra/k8s/mumbai/worker.yaml
 
-# ── Montreal ──────────────────────────────────────────────────────────────────
+# ── Montreal — start worker FIRST, no generator yet ──────────────────────────
 gcloud container clusters get-credentials gcp-montreal \
   --zone northamerica-northeast1-a --project ${PROJECT} --quiet
 
 kubectl delete hpa worker-montreal-hpa -n green-cloud --ignore-not-found
-
 kubectl apply -f infra/k8s/montreal/redis.yaml
+kubectl apply -f infra/k8s/montreal/worker-deployment.yaml
 
+# ── Wait for all workers to be ready BEFORE starting generators ──────────────
+echo ""
+echo "=== Waiting for workers to be ready ==="
+gcloud container clusters get-credentials gcp-mumbai \
+  --zone asia-south1-a --project ${PROJECT} --quiet
+kubectl rollout status deployment/redis               -n green-cloud --timeout=180s
+kubectl rollout status deployment/carbon-forecaster   -n green-cloud --timeout=180s
+kubectl rollout status deployment/admission-controller -n green-cloud --timeout=180s
+kubectl rollout status deployment/worker-mumbai       -n green-cloud --timeout=180s
+
+gcloud container clusters get-credentials gcp-montreal \
+  --zone northamerica-northeast1-a --project ${PROJECT} --quiet
+kubectl rollout status deployment/redis           -n green-cloud --timeout=180s
+kubectl rollout status deployment/worker-montreal -n green-cloud --timeout=180s
+
+echo ""
+echo "Workers ready. Waiting 10s for Pub/Sub subscriptions to stabilize..."
+sleep 10
+
+# ── NOW start job generators ──────────────────────────────────────────────────
+echo "Starting job generators..."
+
+gcloud container clusters get-credentials gcp-mumbai \
+  --zone asia-south1-a --project ${PROJECT} --quiet
+kubectl apply -f - << YAML
+$(cat infra/k8s/mumbai/job-generator.yaml \
+  | sed 's/value: "green"/value: "baseline"/' \
+  | sed 's/value: "predictive"/value: "reactive"/')
+YAML
+
+gcloud container clusters get-credentials gcp-montreal \
+  --zone northamerica-northeast1-a --project ${PROJECT} --quiet
 kubectl apply -f - << YAML
 $(cat infra/k8s/montreal/job-generator.yaml \
   | sed 's/value: "green"/value: "baseline"/' \
   | sed 's/value: "predictive"/value: "reactive"/')
 YAML
 
-kubectl apply -f infra/k8s/montreal/worker-deployment.yaml
-
-# ── Wait ──────────────────────────────────────────────────────────────────────
-echo "=== Waiting for Mumbai pods ==="
+kubectl rollout status deployment/job-generator -n green-cloud --timeout=60s
 gcloud container clusters get-credentials gcp-mumbai \
   --zone asia-south1-a --project ${PROJECT} --quiet
-kubectl rollout status deployment/redis              -n green-cloud --timeout=180s
-kubectl rollout status deployment/carbon-forecaster  -n green-cloud --timeout=180s
-kubectl rollout status deployment/job-generator      -n green-cloud --timeout=180s
-kubectl rollout status deployment/admission-controller -n green-cloud --timeout=180s
-kubectl rollout status deployment/worker-mumbai      -n green-cloud --timeout=180s
-
-echo "=== Waiting for Montreal pods ==="
-gcloud container clusters get-credentials gcp-montreal \
-  --zone northamerica-northeast1-a --project ${PROJECT} --quiet
-kubectl rollout status deployment/redis           -n green-cloud --timeout=180s
-kubectl rollout status deployment/job-generator   -n green-cloud --timeout=180s
-kubectl rollout status deployment/worker-montreal -n green-cloud --timeout=180s
+kubectl rollout status deployment/job-generator -n green-cloud --timeout=60s
 
 # ── Status ────────────────────────────────────────────────────────────────────
 echo ""
