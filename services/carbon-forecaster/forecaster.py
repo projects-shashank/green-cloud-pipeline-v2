@@ -87,6 +87,12 @@ HISTORY_SIZE = 288
 
 # ── State ─────────────────────────────────────────────────────────────────────
 
+_simulation = {
+    "active": False,
+    "until":  0.0,
+    "type":   None,
+}
+
 _history = {
     "mumbai":   deque(maxlen=HISTORY_SIZE),
     "montreal": deque(maxlen=HISTORY_SIZE),
@@ -415,10 +421,6 @@ if __name__ == "__main__":
 
 # ── Simulation controls ───────────────────────────────────────────────────────
 
-_simulation = {
-    "active":     False,
-    "until":      0.0,
-    "type":       None,  # "approaching" or "green_window"
 }
 
 
