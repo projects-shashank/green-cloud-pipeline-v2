@@ -31,7 +31,7 @@ spec:
         - name: REDIS_HOST
           value: "redis"
         - name: SLA_THRESHOLD_MS
-          value: "5000"
+          value: "1000"
         resources:
           requests:
             cpu: "600m"
