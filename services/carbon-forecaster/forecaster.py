@@ -47,7 +47,7 @@ from pathlib import Path
 
 import numpy as np
 import requests
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 sys.path.insert(0, "/app/shared")
 from lineage import now_utc_iso
@@ -408,3 +408,37 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+@app.route("/admin/seed", methods=["POST"])
+def seed_history():
+    """
+    Seed historical carbon intensity data into the running forecaster.
+    POST JSON: {"mumbai": [[ts, intensity], ...], "montreal": [[ts, intensity], ...]}
+    This populates _history deques in the live process without restarting.
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No JSON body"}), 400
+
+        seeded = {}
+        for region in ["mumbai", "montreal"]:
+            if region in data:
+                readings = data[region]
+                for ts, intensity in readings:
+                    _history[region].append((ts, float(intensity)))
+                seeded[region] = len(readings)
+                log.info("Seeded %d readings for %s", len(readings), region)
+
+        # Trigger immediate state recomputation
+        with _state_lock:
+            if _fallback["mumbai"] and _fallback["montreal"]:
+                _state["mumbai"]   = compute_mumbai_state(_fallback["mumbai"])
+                _state["montreal"] = compute_montreal_state(_fallback["montreal"])
+                _state["last_updated"] = now_utc_iso()
+
+        return jsonify({"seeded": seeded, "status": "ok"})
+    except Exception as e:
+        log.error("Seed error: %s", e)
+        return jsonify({"error": str(e)}), 500
