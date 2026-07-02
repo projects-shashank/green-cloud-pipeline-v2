@@ -22,3 +22,16 @@ module "gke" {
   min_node_count     = 1
   max_node_count     = 2
 }
+
+module "artifact_registry" {
+  source        = "../../modules/artifact-registry"
+  project_id    = var.project_id
+  region        = var.region
+  repository_id = "green-cloud-pipeline"
+}
+
+module "pubsub" {
+  source       = "../../modules/pubsub"
+  project_id   = var.project_id
+  topic_prefix = "montreal"
+}
