@@ -140,13 +140,13 @@ def simulate_processing(job: dict) -> None:
 
     if job_type == "interactive_inference":
         output_tokens = job.get("expected_output_token_count", 512)
-        delay = output_tokens * 0.001        # 1ms per token
-        delay = max(0.5, min(delay, 2.0))   # clamp 500ms-2000ms
+        delay = output_tokens * 0.0002       # 0.2ms per token
+        delay = max(0.1, min(delay, 0.5))   # clamp 100ms-500ms
 
     elif job_type == "batch_image_gen":
         num_images = job.get("num_images_requested", 4)
-        delay = num_images * 0.5             # 500ms per image
-        delay = max(2.0, min(delay, 8.0))   # clamp 2000ms-8000ms
+        delay = num_images * 0.1             # 100ms per image
+        delay = max(0.5, min(delay, 2.0))   # clamp 500ms-2000ms
 
     else:
         delay = 1.0
