@@ -66,7 +66,7 @@ BQ_DATASET            = get_env("BQ_DATASET", "green_cloud_pipeline")
 BQ_TABLE              = get_env("BQ_TABLE", "jobs")
 GCS_BUCKET            = get_env("GCS_BUCKET")
 REDIS_HOST            = get_env("REDIS_HOST", "redis")
-REDIS_PORT            = int(get_env("REDIS_PORT", "6379"))
+REDIS_PORT = int(os.environ.get("REDIS_SERVICE_PORT", "6379"))
 SLA_THRESHOLD_MS      = int(get_env("SLA_THRESHOLD_MS", "5000"))
 MAX_WORKERS           = int(get_env("MAX_WORKERS", "4"))
 
