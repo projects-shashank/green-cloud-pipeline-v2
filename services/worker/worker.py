@@ -69,10 +69,23 @@ SUBSCRIPTION_PATH = f"projects/{PROJECT_ID}/subscriptions/{SUBSCRIPTION_ID}"
 BQ_TABLE_PATH     = f"{PROJECT_ID}.{BQ_DATASET}.{BQ_TABLE}"
 
 # ── GCP clients ───────────────────────────────────────────────────────────────
+# Thread-local clients — each thread gets its own instance
+# Shared clients with default connection pools serialize concurrent I/O
+# which causes queue buildup when multiple threads write simultaneously
 
-bq_client  = bigquery.Client(project=PROJECT_ID)
-gcs_client = storage.Client(project=PROJECT_ID)
-gcs_bucket = gcs_client.bucket(GCS_BUCKET)
+import threading
+_thread_local = threading.local()
+
+def get_bq_client():
+    if not hasattr(_thread_local, "bq_client"):
+        _thread_local.bq_client = bigquery.Client(project=PROJECT_ID)
+    return _thread_local.bq_client
+
+def get_gcs_bucket():
+    if not hasattr(_thread_local, "gcs_bucket"):
+        gcs_client = storage.Client(project=PROJECT_ID)
+        _thread_local.gcs_bucket = gcs_client.bucket(GCS_BUCKET)
+    return _thread_local.gcs_bucket
 
 # ── Redis client ──────────────────────────────────────────────────────────────
 
@@ -156,7 +169,7 @@ def simulate_processing(job: dict) -> None:
 # ── Storage writers ───────────────────────────────────────────────────────────
 
 def write_to_bigquery(record: dict) -> None:
-    errors = bq_client.insert_rows_json(BQ_TABLE_PATH, [record])
+    errors = get_bq_client().insert_rows_json(BQ_TABLE_PATH, [record])
     if errors:
         log.error("BigQuery insert errors: %s", errors)
         raise RuntimeError(f"BigQuery insert failed: {errors}")
@@ -169,7 +182,7 @@ def write_to_gcs(record: dict) -> None:
         f"{ts.year}/{ts.month:02d}/{ts.day:02d}/{ts.hour:02d}/"
         f"{record['job_id']}.json"
     )
-    blob = gcs_bucket.blob(path)
+    blob = get_gcs_bucket().blob(path)
     blob.upload_from_string(
         json.dumps(record),
         content_type="application/json",
