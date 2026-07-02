@@ -34,10 +34,10 @@ spec:
           value: "5000"
         resources:
           requests:
-            cpu: "700m"
+            cpu: "600m"
             memory: "512Mi"
           limits:
-            cpu: "1000m"
+            cpu: "900m"
             memory: "1Gi"
 ---
 apiVersion: autoscaling/v2
