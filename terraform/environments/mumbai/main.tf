@@ -17,7 +17,7 @@ module "gke" {
   project_id         = var.project_id
   region             = var.zone
   cluster_name       = var.cluster_name
-  machine_type       = "e2-medium"
+  machine_type       = "e2-standard-2"
   enable_autoscaling = false
   node_count         = 1
 }

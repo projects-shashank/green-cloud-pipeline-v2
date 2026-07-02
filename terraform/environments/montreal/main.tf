@@ -17,7 +17,7 @@ module "gke" {
   project_id         = var.project_id
   region             = var.zone
   cluster_name       = var.cluster_name
-  machine_type       = "e2-medium"
+  machine_type       = "e2-standard-2"
   enable_autoscaling = true
   min_node_count     = 1
   max_node_count     = 2
@@ -31,7 +31,8 @@ module "artifact_registry" {
 }
 
 module "pubsub" {
-  source       = "../../modules/pubsub"
-  project_id   = var.project_id
-  topic_prefix = "montreal"
+  source               = "../../modules/pubsub"
+  project_id           = var.project_id
+  topic_prefix         = "montreal"
+  create_process_topic = false
 }
