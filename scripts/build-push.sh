@@ -1,8 +1,5 @@
 #!/bin/bash
-# Build all Docker images and push to Artifact Registry in both regions
-# Run from repo root: bash scripts/build-push.sh
-
-set -e  # exit on any error
+set -e
 
 PROJECT_ID="green-cloud-pipeline-v2"
 MUMBAI_REGISTRY="asia-south1-docker.pkg.dev/${PROJECT_ID}/green-cloud-pipeline"
@@ -12,10 +9,8 @@ TAG="latest"
 SERVICES=("job-generator" "carbon-forecaster" "admission-controller" "worker")
 
 echo "=== Authenticating Docker with Artifact Registry ==="
-gcloud auth configure-docker \
-  asia-south1-docker.pkg.dev \
-  northamerica-northeast1-docker.pkg.dev \
-  --quiet
+gcloud auth configure-docker asia-south1-docker.pkg.dev --quiet
+gcloud auth configure-docker northamerica-northeast1-docker.pkg.dev --quiet
 
 echo ""
 echo "=== Building images ==="
@@ -44,6 +39,6 @@ for SERVICE in "${SERVICES[@]}"; do
 done
 
 echo ""
-echo "=== All images built and pushed successfully ==="
+echo "=== All images built and pushed ==="
 echo "Mumbai:   ${MUMBAI_REGISTRY}"
 echo "Montreal: ${MONTREAL_REGISTRY}"
