@@ -25,7 +25,7 @@ spec:
         - name: SUBSCRIPTION_ID
           value: "montreal-jobs-sub"
         - name: CARBON_FORECASTER_URL
-          value: "http://carbon-forecaster.green-cloud.svc.cluster.local:8080/carbon"
+          value: "http://35.200.248.98:8080/carbon"
         - name: GCS_BUCKET
           value: "green-cloud-pipeline-v2-data-lake"
         - name: REDIS_HOST
