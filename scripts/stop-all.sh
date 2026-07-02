@@ -24,3 +24,15 @@ echo "Next: run one of:"
 echo "  bash scripts/run-baseline.sh"
 echo "  bash scripts/run-green-reactive.sh"
 echo "  bash scripts/run-green-predictive.sh"
+
+echo "Waiting 30s for generators to fully stop before seeking subscriptions..."
+sleep 30
+
+for sub in mumbai-jobs-sub mumbai-process-sub montreal-jobs-sub mumbai-dlq-sub montreal-dlq-sub; do
+  echo "Clearing $sub..."
+  gcloud pubsub subscriptions seek $sub \
+    --time=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+    --project green-cloud-pipeline-v2
+done
+
+echo "All subscriptions cleared."
