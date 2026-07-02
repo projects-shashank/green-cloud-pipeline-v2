@@ -46,6 +46,7 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
+from datetime import datetime, timezone
 import requests
 from flask import Flask, jsonify, request
 
@@ -253,11 +254,25 @@ def compute_montreal_state(intensity: float) -> dict:
             "warming_up":        True,
         }
     green_threshold = t["green_threshold"]
-    in_green_window = intensity <= green_threshold
-    approaching     = (
-        False if in_green_window
-        else is_green_window_approaching(_history["montreal"], green_threshold)
-    )
+
+    # Check simulation override
+    sim_active = _simulation["active"] and time.time() < _simulation["until"]
+    if sim_active and _simulation["type"] == "green_window":
+        in_green_window = True
+        approaching     = False
+        log.info("SIMULATION: forcing in_green_window=True")
+    elif sim_active and _simulation["type"] == "approaching":
+        in_green_window = False
+        approaching     = True
+        log.info("SIMULATION: forcing approaching=True")
+    else:
+        _simulation["active"] = False  # expired
+        in_green_window = intensity <= green_threshold
+        approaching     = (
+            False if in_green_window
+            else is_green_window_approaching(_history["montreal"], green_threshold)
+        )
+
     return {
         "current_intensity": round(intensity, 2),
         "green_threshold":   green_threshold,
@@ -267,6 +282,7 @@ def compute_montreal_state(intensity: float) -> dict:
         "history_std":       t["history_std"],
         "history_size":      t["history_size"],
         "warming_up":        False,
+        "simulated":         sim_active,
     }
 
 # ── Startup: load 24h history immediately ────────────────────────────────────
