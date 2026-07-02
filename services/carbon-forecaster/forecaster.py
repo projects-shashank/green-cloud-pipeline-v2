@@ -185,26 +185,53 @@ def is_green_window_approaching(history: deque, green_threshold: float) -> bool:
 # ── Kubernetes scaling ────────────────────────────────────────────────────────
 
 def scale_montreal_worker(replicas: int) -> None:
+    """
+    Scale Montreal worker deployment using Kubernetes Python client.
+    Uses Workload Identity — no key files needed.
+    Connects to Montreal cluster via GKE API endpoint.
+    """
     global _currently_scaled_up
     if replicas > 1 and _currently_scaled_up:
         return
     if replicas == 1 and not _currently_scaled_up:
         return
     try:
-        import subprocess
-        result = subprocess.run([
-            "kubectl", "scale", "deployment", MONTREAL_DEPLOYMENT,
-            f"--replicas={replicas}",
-            f"--namespace={MONTREAL_NAMESPACE}",
-            "--context=gke_green-cloud-pipeline-v2_northamerica-northeast1-a_gcp-montreal",
-        ], capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
+        from google.cloud import container_v1
+        from google.auth import default as google_auth_default
+        from google.auth.transport.requests import Request
+        import google.auth
+        from kubernetes import client as k8s_client
+
+        # Get Montreal cluster endpoint
+        cluster_client = container_v1.ClusterManagerClient()
+        cluster = cluster_client.get_cluster(
+            name=f"projects/{PROJECT_ID}/locations/northamerica-northeast1-a/clusters/gcp-montreal"
+        )
+
+        # Build k8s client with GCP credentials
+        credentials, _ = google_auth_default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        credentials.refresh(Request())
+
+        configuration = k8s_client.Configuration()
+        configuration.host = f"https://{cluster.endpoint}"
+        configuration.verify_ssl = False
+        configuration.api_key = {"authorization": f"Bearer {credentials.token}"}
+
+        with k8s_client.ApiClient(configuration) as api_client:
+            apps_v1 = k8s_client.AppsV1Api(api_client)
+            body = {"spec": {"replicas": replicas}}
+            apps_v1.patch_namespaced_deployment_scale(
+                name=MONTREAL_DEPLOYMENT,
+                namespace=MONTREAL_NAMESPACE,
+                body=body,
+            )
             log.info("Scaled Montreal worker to %d replicas", replicas)
             _currently_scaled_up = replicas > 1
-        else:
-            log.error("Failed to scale: %s", result.stderr)
+
     except Exception as e:
-        log.error("Exception scaling: %s", e)
+        log.error("Exception scaling Montreal worker: %s", e)
 
 # ── State builders ────────────────────────────────────────────────────────────
 
