@@ -34,7 +34,9 @@ kubectl apply -f infra/k8s/mumbai/worker.yaml
 gcloud container clusters get-credentials gcp-montreal \
   --zone northamerica-northeast1-a --project ${PROJECT} --quiet
 
+kubectl create secret generic electricity-maps-secret --from-literal=api-key="${EMAPS_KEY}" --namespace green-cloud --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f infra/k8s/montreal/redis.yaml
+kubectl apply -f infra/k8s/montreal/carbon-forecaster.yaml
 kubectl apply -f infra/k8s/montreal/worker.yaml
 
 # ── Step 2: Wait for ALL workers on BOTH clusters ────────────────────────────
@@ -50,6 +52,7 @@ echo "=== Waiting for Montreal workers ==="
 gcloud container clusters get-credentials gcp-montreal \
   --zone northamerica-northeast1-a --project ${PROJECT} --quiet
 kubectl rollout status deployment/redis            -n green-cloud --timeout=180s
+kubectl rollout status deployment/carbon-forecaster -n green-cloud --timeout=180s
 kubectl rollout status deployment/worker-montreal  -n green-cloud --timeout=180s
 
 echo "All workers running. Waiting 20s for Pub/Sub streaming pulls to establish..."

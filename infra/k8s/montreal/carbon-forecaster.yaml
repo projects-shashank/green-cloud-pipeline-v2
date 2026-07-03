@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: carbon-forecaster
+  namespace: green-cloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: carbon-forecaster
+  template:
+    metadata:
+      labels:
+        app: carbon-forecaster
+    spec:
+      serviceAccountName: green-cloud-sa
+      containers:
+      - name: carbon-forecaster
+        image: northamerica-northeast1-docker.pkg.dev/green-cloud-pipeline-v2/green-cloud-pipeline/carbon-forecaster:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: ELECTRICITY_MAPS_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: electricity-maps-secret
+              key: api-key
+        - name: PROJECT_ID
+          value: "green-cloud-pipeline-v2"
+        - name: SCALING_MODE
+          value: "reactive"
+        - name: POLL_INTERVAL_SECONDS
+          value: "300"
+        - name: PORT
+          value: "8080"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "200m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: carbon-forecaster
+  namespace: green-cloud
+spec:
+  selector:
+    app: carbon-forecaster
+  ports:
+  - port: 8080
+    targetPort: 8080
