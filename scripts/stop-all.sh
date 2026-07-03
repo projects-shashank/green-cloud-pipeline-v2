@@ -5,7 +5,7 @@ echo "=== Stopping all pods ==="
 gcloud container clusters get-credentials gcp-mumbai \
   --zone asia-south1-a --project green-cloud-pipeline-v2 --quiet
 kubectl delete deployment --all -n green-cloud --ignore-not-found
-kubectl delete service carbon-forecaster carbon-forecaster-external \
+kubectl delete service carbon-forecaster \
   -n green-cloud --ignore-not-found 2>/dev/null || true
 
 gcloud container clusters get-credentials gcp-montreal \

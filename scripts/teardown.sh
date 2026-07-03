@@ -11,7 +11,7 @@ echo "--- Deleting Mumbai pods ---"
 gcloud container clusters get-credentials gcp-mumbai \
   --zone asia-south1-a --project green-cloud-pipeline-v2 --quiet 2>/dev/null || true
 kubectl delete deployment --all -n green-cloud --ignore-not-found 2>/dev/null || true
-kubectl delete service carbon-forecaster carbon-forecaster-external \
+kubectl delete service carbon-forecaster \
   -n green-cloud --ignore-not-found 2>/dev/null || true
 
 echo "--- Deleting Montreal pods ---"
@@ -35,27 +35,6 @@ cd terraform/environments/mumbai
 terraform destroy -auto-approve
 cd ../../..
 
-# Recreate subscriptions clean
-echo "--- Recreating subscriptions ---"
-for sub in mumbai-jobs-sub mumbai-process-sub montreal-jobs-sub; do
-  case $sub in
-    mumbai-jobs-sub)    TOPIC="mumbai-jobs";    DLQ="mumbai-dlq" ;;
-    mumbai-process-sub) TOPIC="mumbai-process"; DLQ="mumbai-dlq" ;;
-    montreal-jobs-sub)  TOPIC="montreal-jobs";  DLQ="montreal-dlq" ;;
-  esac
-  echo "Recreating $sub..."
-  gcloud pubsub subscriptions delete $sub \
-    --project green-cloud-pipeline-v2 --quiet 2>/dev/null || true
-  gcloud pubsub subscriptions create $sub \
-    --topic=projects/green-cloud-pipeline-v2/topics/${TOPIC} \
-    --project=green-cloud-pipeline-v2 \
-    --ack-deadline=60 \
-    --message-retention-duration=86400s \
-    --dead-letter-topic=projects/green-cloud-pipeline-v2/topics/${DLQ} \
-    --max-delivery-attempts=5 \
-    --min-retry-delay=10s \
-    --max-retry-delay=300s
-done
 
 # Check quota back to 0
 bash scripts/quota-check.sh

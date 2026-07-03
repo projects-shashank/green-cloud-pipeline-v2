@@ -105,8 +105,8 @@ redis_client = get_redis_client()
 # ── Carbon intensity — thread-safe cache ──────────────────────────────────────
 # Bug fixed: without a lock, all 4 threads simultaneously check cache expiry
 # and all make HTTP calls at the same time (thundering herd).
-# For Montreal this is a cross-region call to 35.200.248.98 — blocks all
-# threads for 200-500ms every 60 seconds. Lock ensures only one thread fetches.
+# Previously Montreal called an external IP (35.200.248.98) causing cross-region
+# HTTP delays. Now both regions use a local forecaster — lock prevents thundering herd.
 
 _carbon_cache      = {"data": None, "fetched_at": 0.0}
 _carbon_cache_lock = threading.Lock()
