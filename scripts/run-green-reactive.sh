@@ -35,8 +35,7 @@ gcloud container clusters get-credentials gcp-montreal \
   --zone northamerica-northeast1-a --project ${PROJECT} --quiet
 
 kubectl apply -f infra/k8s/montreal/redis.yaml
-kubectl apply -f infra/k8s/montreal/worker-deployment.yaml
-kubectl apply -f infra/k8s/montreal/worker-hpa.yaml
+kubectl apply -f infra/k8s/montreal/worker.yaml
 
 # ── Step 2: Wait for ALL workers on BOTH clusters ────────────────────────────
 echo "=== Waiting for Mumbai workers ==="

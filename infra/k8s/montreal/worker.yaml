@@ -32,6 +32,8 @@ spec:
           value: "redis"
         - name: SLA_THRESHOLD_MS
           value: "5000"
+        - name: MAX_WORKERS
+          value: "4"
         resources:
           requests:
             cpu: "600m"

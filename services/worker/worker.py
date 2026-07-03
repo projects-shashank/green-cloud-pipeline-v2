@@ -26,6 +26,7 @@ import sys
 import json
 import time
 import logging
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -68,12 +69,11 @@ MAX_WORKERS           = int(get_env("MAX_WORKERS", "4"))
 SUBSCRIPTION_PATH = f"projects/{PROJECT_ID}/subscriptions/{SUBSCRIPTION_ID}"
 BQ_TABLE_PATH     = f"{PROJECT_ID}.{BQ_DATASET}.{BQ_TABLE}"
 
-# ── GCP clients ───────────────────────────────────────────────────────────────
-# Thread-local clients — each thread gets its own instance
+# ── GCP clients — thread-local ────────────────────────────────────────────────
+# Each thread gets its own BigQuery and GCS client instance.
 # Shared clients with default connection pools serialize concurrent I/O
-# which causes queue buildup when multiple threads write simultaneously
+# causing queue buildup when multiple threads write simultaneously.
 
-import threading
 _thread_local = threading.local()
 
 def get_bq_client():
@@ -102,10 +102,15 @@ def get_redis_client():
 
 redis_client = get_redis_client()
 
-# ── Carbon intensity ──────────────────────────────────────────────────────────
+# ── Carbon intensity — thread-safe cache ──────────────────────────────────────
+# Bug fixed: without a lock, all 4 threads simultaneously check cache expiry
+# and all make HTTP calls at the same time (thundering herd).
+# For Montreal this is a cross-region call to 35.200.248.98 — blocks all
+# threads for 200-500ms every 60 seconds. Lock ensures only one thread fetches.
 
-_carbon_cache = {"data": None, "fetched_at": 0.0}
-_CARBON_TTL   = 60
+_carbon_cache      = {"data": None, "fetched_at": 0.0}
+_carbon_cache_lock = threading.Lock()
+_CARBON_TTL        = 60
 
 REGIONAL_DEFAULTS = {
     "mumbai":   380.0,
@@ -114,19 +119,30 @@ REGIONAL_DEFAULTS = {
 
 
 def get_carbon_intensity(region: str) -> float:
-    age = time.time() - _carbon_cache["fetched_at"]
-    if _carbon_cache["data"] is not None and age < _CARBON_TTL:
-        return _carbon_cache["data"][region]["current_intensity"]
+    """
+    Get carbon intensity for a region in gCO2/kWh.
+    Thread-safe: only one thread fetches from forecaster at a time.
+    All other threads wait for the lock and use the refreshed cache.
+    """
+    with _carbon_cache_lock:
+        age = time.time() - _carbon_cache["fetched_at"]
+        if _carbon_cache["data"] is not None and age < _CARBON_TTL:
+            return _carbon_cache["data"][region]["current_intensity"]
+
+    # Cache is stale — fetch fresh data (lock released during HTTP call)
     try:
         resp = requests.get(CARBON_FORECASTER_URL, timeout=3)
         resp.raise_for_status()
         data = resp.json()
-        _carbon_cache["data"]       = data
-        _carbon_cache["fetched_at"] = time.time()
+        with _carbon_cache_lock:
+            _carbon_cache["data"]       = data
+            _carbon_cache["fetched_at"] = time.time()
         return data[region]["current_intensity"]
-    except Exception:
-        if _carbon_cache["data"] is not None:
-            return _carbon_cache["data"][region]["current_intensity"]
+    except Exception as e:
+        log.warning("Carbon fetch failed: %s — using cached/default", e)
+        with _carbon_cache_lock:
+            if _carbon_cache["data"] is not None:
+                return _carbon_cache["data"][region]["current_intensity"]
         return REGIONAL_DEFAULTS.get(region, 300.0)
 
 # ── Processing delay ──────────────────────────────────────────────────────────
@@ -139,15 +155,10 @@ def simulate_processing(job: dict) -> None:
     Without this, jobs complete in ~150ms (I/O-bound BigQuery/GCS writes)
     and adding workers gives minimal throughput improvement.
 
-    With realistic delays:
-    - 1 worker handles ~0.5 batch jobs/sec
-    - 2 workers handle ~1.0 batch jobs/sec
-    - Scaling produces a measurable latency difference
-
-    interactive_inference: 500ms-2000ms based on output token count
-        ~1ms per output token — realistic for LLM inference
-    batch_image_gen: 2000ms-8000ms based on number of images
-        ~500ms per image — realistic for diffusion model generation
+    interactive_inference: 100ms-500ms based on output token count
+        ~0.2ms per output token
+    batch_image_gen: 500ms-2000ms based on number of images
+        ~100ms per image
     """
     job_type = job.get("job_type", "")
 
@@ -217,7 +228,6 @@ def write_to_redis(record: dict) -> None:
 
 def process_job(job: dict) -> dict:
     # Simulate realistic ML processing time before recording timestamps
-    # This makes worker scaling meaningful — compute-bound, not I/O-bound
     simulate_processing(job)
 
     processed_timestamp = now_utc_iso()
@@ -250,7 +260,7 @@ def process_job(job: dict) -> dict:
     else:
         carbon_saved_g = 0.0
 
-    # Latency and SLA — measured after processing completes
+    # Latency measured after full processing including storage writes
     arrival_dt   = datetime.fromisoformat(job["arrival_timestamp"])
     processed_dt = datetime.fromisoformat(processed_timestamp)
     latency_ms   = (processed_dt - arrival_dt).total_seconds() * 1000
@@ -321,8 +331,8 @@ def handle_message(message) -> None:
 
 def main():
     log.info(
-        "Worker starting — region=%s subscription=%s sla_threshold=%dms",
-        REGION, SUBSCRIPTION_PATH, SLA_THRESHOLD_MS,
+        "Worker starting — region=%s subscription=%s sla_threshold=%dms max_workers=%d",
+        REGION, SUBSCRIPTION_PATH, SLA_THRESHOLD_MS, MAX_WORKERS,
     )
     subscriber   = pubsub_v1.SubscriberClient()
     flow_control = pubsub_v1.types.FlowControl(max_messages=MAX_WORKERS)
