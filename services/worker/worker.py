@@ -33,6 +33,7 @@ from pathlib import Path
 import redis
 import requests
 from google.cloud import pubsub_v1, bigquery, storage
+from prometheus_client import Counter, Histogram, start_http_server, REGISTRY
 
 sys.path.insert(0, "/app/shared")
 from lineage import now_utc_iso
@@ -44,6 +45,45 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger(__name__)
+
+# ── Prometheus metrics ────────────────────────────────────────────────────────
+
+jobs_processed_total = Counter(
+    'jobs_processed_total',
+    'Total jobs processed',
+    ['region', 'job_type', 'was_redirected']
+)
+
+job_latency_ms = Histogram(
+    'job_latency_ms',
+    'Job end-to-end latency in milliseconds',
+    ['region', 'job_type', 'was_redirected'],
+    buckets=[100, 250, 500, 1000, 2000, 3000, 5000, 10000, 30000, 60000]
+)
+
+carbon_emitted_grams_total = Counter(
+    'carbon_emitted_grams_total',
+    'Total carbon emitted in grams',
+    ['region']
+)
+
+carbon_saved_grams_total = Counter(
+    'carbon_saved_grams_total',
+    'Total carbon saved in grams',
+    ['region']
+)
+
+sla_violations_total = Counter(
+    'sla_violations_total',
+    'Total SLA violations',
+    ['region', 'job_type']
+)
+
+energy_kwh_total = Counter(
+    'energy_kwh_total',
+    'Total energy consumed in kWh',
+    ['region', 'job_type']
+)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -320,6 +360,30 @@ def handle_message(message) -> None:
             record["carbon_emitted_g"], record["carbon_saved_g"],
             record["latency_ms"], not record["sla_violated"],
         )
+        # Update Prometheus metrics
+        was_redirected_str = str(record["was_redirected"]).lower()
+        job_type           = record["job_type"]
+        region             = record["processed_region"]
+
+        jobs_processed_total.labels(
+            region=region,
+            job_type=job_type,
+            was_redirected=was_redirected_str
+        ).inc()
+
+        job_latency_ms.labels(
+            region=region,
+            job_type=job_type,
+            was_redirected=was_redirected_str
+        ).observe(record["latency_ms"])
+
+        carbon_emitted_grams_total.labels(region=region).inc(record["carbon_emitted_g"])
+        carbon_saved_grams_total.labels(region=region).inc(record["carbon_saved_g"])
+        energy_kwh_total.labels(region=region, job_type=job_type).inc(record["energy_kwh"])
+
+        if record["sla_violated"]:
+            sla_violations_total.labels(region=region, job_type=job_type).inc()
+
         message.ack()
 
     except Exception as e:
@@ -341,6 +405,9 @@ def main():
         callback=handle_message,
         flow_control=flow_control,
     )
+    # Start Prometheus metrics server on port 9090
+    start_http_server(9090)
+    log.info("Prometheus metrics server started on port 9090")
     log.info("Worker listening on %s", SUBSCRIPTION_PATH)
     try:
         streaming_pull.result()

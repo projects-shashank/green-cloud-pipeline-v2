@@ -37,6 +37,7 @@ from pathlib import Path
 
 import requests
 from google.cloud import pubsub_v1
+from prometheus_client import Counter, start_http_server
 
 sys.path.insert(0, "/app/shared")
 from lineage import now_utc_iso
@@ -46,6 +47,20 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger(__name__)
+
+# ── Prometheus metrics ────────────────────────────────────────────────────────
+
+jobs_routed_total = Counter(
+    'jobs_routed_total',
+    'Total jobs routed by admission controller',
+    ['destination', 'reason', 'job_type']
+)
+
+jobs_redirected_total = Counter(
+    'jobs_redirected_total',
+    'Total jobs redirected to Montreal',
+    ['reason']
+)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -200,6 +215,15 @@ def handle_message(message) -> None:
         job = enrich_job(job, destination, reason)
         forward_job(job, destination)
 
+        # Update Prometheus metrics
+        jobs_routed_total.labels(
+            destination=destination,
+            reason=reason,
+            job_type=job.get("job_type", "unknown")
+        ).inc()
+        if destination == "montreal":
+            jobs_redirected_total.labels(reason=reason).inc()
+
         log.info(
             "job_id=%s type=%s priority=%s → %s (%s)",
             job_id, job_type, job.get("priority_tier"), destination, reason,
@@ -232,6 +256,9 @@ def main():
         flow_control=flow_control,
     )
 
+    # Start Prometheus metrics server
+    start_http_server(9090)
+    log.info("Prometheus metrics server started on port 9090")
     log.info("Listening for messages...")
 
     try:
