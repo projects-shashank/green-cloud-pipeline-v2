@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-agent-config
+  namespace: green-cloud
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+
+    scrape_configs:
+      - job_name: 'worker-montreal'
+        static_configs:
+          - targets: ['worker-montreal:9090']
+            labels:
+              cluster: 'montreal'
+
+    remote_write:
+      - url: http://34.93.71.183:9090/api/v1/write
+        queue_config:
+          max_samples_per_send: 1000
+          max_shards: 5
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-agent
+  namespace: green-cloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus-agent
+  template:
+    metadata:
+      labels:
+        app: prometheus-agent
+    spec:
+      containers:
+      - name: prometheus-agent
+        image: prom/prometheus:v2.51.0
+        args:
+          - "--config.file=/etc/prometheus/prometheus.yml"
+          - "--enable-feature=agent"
+          - "--storage.agent.path=/prometheus"
+        ports:
+        - containerPort: 9090
+        volumeMounts:
+        - name: config
+          mountPath: /etc/prometheus
+        - name: storage
+          mountPath: /prometheus
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "128Mi"
+          limits:
+            cpu: "100m"
+            memory: "256Mi"
+      volumes:
+      - name: config
+        configMap:
+          name: prometheus-agent-config
+      - name: storage
+        emptyDir: {}

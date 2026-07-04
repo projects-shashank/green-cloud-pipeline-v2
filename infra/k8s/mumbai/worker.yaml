@@ -39,3 +39,16 @@ spec:
           limits:
             cpu: "800m"
             memory: "1Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker-mumbai
+  namespace: green-cloud
+spec:
+  selector:
+    app: worker-mumbai
+  ports:
+  - name: metrics
+    port: 9090
+    targetPort: 9090
