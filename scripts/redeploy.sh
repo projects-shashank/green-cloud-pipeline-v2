@@ -131,3 +131,32 @@ kubectl rollout status deployment/custom-metrics-stackdriver-adapter \
   -n custom-metrics --timeout=180s
 
 echo "Custom metrics adapter ready"
+
+# ── Step 8: Deploy Prometheus and Grafana in Mumbai ───────────────────────────
+echo ""
+echo "--- Deploying Prometheus and Grafana ---"
+gcloud container clusters get-credentials gcp-mumbai \
+  --zone asia-south1-a --project ${PROJECT} --quiet
+
+kubectl apply -f infra/k8s/monitoring/prometheus-mumbai.yaml
+kubectl apply -f infra/k8s/monitoring/grafana.yaml
+
+# Worker and admission controller metrics services
+kubectl apply -f infra/k8s/mumbai/worker.yaml
+kubectl apply -f infra/k8s/mumbai/admission-controller.yaml
+
+kubectl rollout status deployment/prometheus -n green-cloud --timeout=120s
+kubectl rollout status deployment/grafana -n green-cloud --timeout=120s
+
+# Deploy Prometheus agent in Montreal
+gcloud container clusters get-credentials gcp-montreal \
+  --zone northamerica-northeast1-a --project ${PROJECT} --quiet
+
+kubectl apply -f infra/k8s/monitoring/prometheus-montreal.yaml
+kubectl apply -f infra/k8s/montreal/worker-deployment.yaml
+
+kubectl rollout status deployment/prometheus-agent -n green-cloud --timeout=120s
+
+echo "Prometheus: http://\$(kubectl --context=gke_${PROJECT}_asia-south1-a_gcp-mumbai get svc prometheus-external -n green-cloud -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):9090"
+echo "Grafana:    http://\$(kubectl --context=gke_${PROJECT}_asia-south1-a_gcp-mumbai get svc grafana -n green-cloud -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):3000"
+echo "Grafana login: admin / green-cloud-2026"
