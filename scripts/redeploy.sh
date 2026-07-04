@@ -105,3 +105,29 @@ echo "Infrastructure ready. Start an experiment run:"
 echo "  ELECTRICITY_MAPS_API_KEY=your_key bash scripts/run-baseline.sh"
 echo "  ELECTRICITY_MAPS_API_KEY=your_key bash scripts/run-green-reactive.sh"
 echo "  ELECTRICITY_MAPS_API_KEY=your_key bash scripts/run-green-predictive.sh"
+
+# ── Step 7: Deploy custom metrics adapter in Montreal (for HPA queue depth) ──
+echo ""
+echo "--- Deploying custom metrics adapter in Montreal ---"
+gcloud container clusters get-credentials gcp-montreal \
+  --zone northamerica-northeast1-a --project ${PROJECT} --quiet
+
+kubectl apply -f https://raw.githubusercontent.com/GoogleCloudPlatform/k8s-stackdriver/master/custom-metrics-stackdriver-adapter/deploy/production/adapter_new_resource_model.yaml
+
+# Annotate adapter service account for Workload Identity
+SA_EMAIL="green-cloud-pipeline-sa@${PROJECT}.iam.gserviceaccount.com"
+kubectl annotate serviceaccount custom-metrics-stackdriver-adapter \
+  -n custom-metrics \
+  iam.gke.io/gcp-service-account=${SA_EMAIL} --overwrite
+
+gcloud iam service-accounts add-iam-policy-binding ${SA_EMAIL} \
+  --role roles/iam.workloadIdentityUser \
+  --member "serviceAccount:${PROJECT}.svc.id.goog[custom-metrics/custom-metrics-stackdriver-adapter]" \
+  2>/dev/null || true
+
+kubectl rollout restart deployment/custom-metrics-stackdriver-adapter \
+  -n custom-metrics
+kubectl rollout status deployment/custom-metrics-stackdriver-adapter \
+  -n custom-metrics --timeout=180s
+
+echo "Custom metrics adapter ready"

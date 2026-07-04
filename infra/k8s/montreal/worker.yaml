@@ -55,9 +55,13 @@ spec:
   minReplicas: 1
   maxReplicas: 2
   metrics:
-  - type: Resource
-    resource:
-      name: cpu
+  - type: External
+    external:
+      metric:
+        name: pubsub.googleapis.com|subscription|num_undelivered_messages
+        selector:
+          matchLabels:
+            resource.labels.subscription_id: montreal-jobs-sub
       target:
-        type: Utilization
-        averageUtilization: 80
+        type: AverageValue
+        averageValue: "20"
