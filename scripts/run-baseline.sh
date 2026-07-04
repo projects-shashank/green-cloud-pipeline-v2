@@ -61,8 +61,8 @@ kubectl rollout status deployment/worker-montreal  -n green-cloud --timeout=180s
 # rollout status = pod running, NOT = worker actively consuming from Pub/Sub
 # The streaming pull client needs ~10s to connect and start pulling
 echo ""
-echo "All workers running. Waiting 20s for Pub/Sub streaming pulls to establish..."
-sleep 20
+echo "All workers running. Waiting 60s for Pub/Sub streaming pulls to establish..."
+sleep 60
 
 # ── Step 4: Start BOTH generators simultaneously ─────────────────────────────
 echo "Starting job generators on both clusters simultaneously..."
