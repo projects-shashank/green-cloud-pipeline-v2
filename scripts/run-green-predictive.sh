@@ -77,10 +77,10 @@ $(cat infra/k8s/montreal/job-generator.yaml \
   | sed 's/value: "baseline"/value: "green"/')
 YAML
 
-kubectl rollout status deployment/job-generator -n green-cloud --timeout=60s
+kubectl rollout status deployment/job-generator -n green-cloud --timeout=120s || true
 gcloud container clusters get-credentials gcp-mumbai \
   --zone asia-south1-a --project ${PROJECT} --quiet
-kubectl rollout status deployment/job-generator -n green-cloud --timeout=60s
+kubectl rollout status deployment/job-generator -n green-cloud --timeout=120s || true
 
 echo ""
 echo "=== Mumbai pods ==="
@@ -96,8 +96,8 @@ kubectl get pods -n green-cloud
 
 echo ""
 echo "=== Run 3: Green + Predictive active ==="
-echo "Mumbai:   80 jobs/min  | ADMISSION_MODE=green | SCALING_MODE=predictive"
-echo "Montreal: 90 jobs/min  | ADMISSION_MODE=green | Forecaster scales BEFORE green window"
+echo "Mumbai:   180 jobs/min  | ADMISSION_MODE=green | SCALING_MODE=predictive"
+echo "Montreal: 240 jobs/min  | ADMISSION_MODE=green | Forecaster scales BEFORE green window"
 echo ""
 echo "To trigger simulation:"
 echo "  kubectl config use-context gke_${PROJECT}_asia-south1-a_gcp-mumbai"

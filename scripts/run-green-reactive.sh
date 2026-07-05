@@ -79,10 +79,10 @@ $(cat infra/k8s/montreal/job-generator.yaml \
   | sed 's/value: "predictive"/value: "reactive"/')
 YAML
 
-kubectl rollout status deployment/job-generator -n green-cloud --timeout=60s
+kubectl rollout status deployment/job-generator -n green-cloud --timeout=120s || true
 gcloud container clusters get-credentials gcp-mumbai \
   --zone asia-south1-a --project ${PROJECT} --quiet
-kubectl rollout status deployment/job-generator -n green-cloud --timeout=60s
+kubectl rollout status deployment/job-generator -n green-cloud --timeout=120s || true
 
 echo ""
 echo "=== Mumbai pods ==="

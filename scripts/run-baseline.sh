@@ -87,11 +87,11 @@ YAML
 
 # Wait for both generators to be running
 echo "Waiting for generators to start..."
-kubectl rollout status deployment/job-generator -n green-cloud --timeout=60s
+kubectl rollout status deployment/job-generator -n green-cloud --timeout=120s || true
 
 gcloud container clusters get-credentials gcp-mumbai \
   --zone asia-south1-a --project ${PROJECT} --quiet
-kubectl rollout status deployment/job-generator -n green-cloud --timeout=60s
+kubectl rollout status deployment/job-generator -n green-cloud --timeout=120s || true
 
 # ── Step 5: Status ────────────────────────────────────────────────────────────
 echo ""
@@ -108,8 +108,8 @@ kubectl get pods -n green-cloud
 
 echo ""
 echo "=== Run 1: Baseline active ==="
-echo "Mumbai:   80 jobs/min  | ADMISSION_MODE=baseline | No scaling"
-echo "Montreal: 90 jobs/min  | ADMISSION_MODE=baseline | No scaling"
+echo "Mumbai:   180 jobs/min  | ADMISSION_MODE=baseline | No scaling"
+echo "Montreal: 240 jobs/min  | ADMISSION_MODE=baseline | No scaling"
 echo "Processing: interactive 100-500ms | batch 500-2000ms"
 echo "SLA threshold: 5000ms"
 echo "Started at: $(date -u)"
