@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run 2: Green + Reactive — carbon-aware routing + HPA (CPU>80%)
+# Run 2: Green + Reactive — carbon-aware routing + HPA (Pub/Sub queue>20)
 set -e
 PROJECT="green-cloud-pipeline-v2"
 EMAPS_KEY="${ELECTRICITY_MAPS_API_KEY}"
@@ -99,7 +99,7 @@ kubectl get hpa -n green-cloud
 
 echo ""
 echo "=== Run 2: Green + Reactive (HPA) active ==="
-echo "Mumbai:   80 jobs/min  | ADMISSION_MODE=green | SCALING_MODE=reactive"
-echo "Montreal: 90 jobs/min  | ADMISSION_MODE=green | HPA scales at CPU>80%"
+echo "Mumbai:   180 jobs/min | ADMISSION_MODE=green | SCALING_MODE=reactive"
+echo "Montreal: 240 jobs/min | ADMISSION_MODE=green | HPA scales at queue>20 messages"
 echo "Started at: $(date -u)"
-echo "Wait 1 minute then: bash scripts/check-results.sh"
+echo "Run for 24 hours then: bash scripts/check-results.sh"
