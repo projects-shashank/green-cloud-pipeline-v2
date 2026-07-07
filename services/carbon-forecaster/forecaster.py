@@ -8,22 +8,27 @@ On startup:
   4. Starts polling every POLL_INTERVAL seconds to keep data fresh
 
 Green window definition (Montreal):
-    green_threshold = min(24h) + std(24h)
+    green_threshold = p25(24h history)
     if current <= green_threshold → in green window
+    Approaching: current <= green_threshold * 1.05 AND slope falling
 
 Migration threshold (Mumbai dirty check):
-    migration_threshold = mean(24h)
+    migration_threshold = p75(24h history)
     if current > migration_threshold → Mumbai is dirty
+    Approaching: current >= migration_threshold * 0.97 AND slope rising
 
 Routing priority (enforced in admission controller):
     1. Montreal in green window → migrate (maximise carbon saving)
     2. Mumbai dirty            → migrate
     3. Otherwise              → process locally
 
-Predictive scaling:
-    If SCALING_MODE=predictive and green window approaching
-    (current within 15% of threshold AND slope non-positive),
-    proactively scale Montreal worker to PREDICTIVE_REPLICAS.
+Predictive scaling triggers (SCALING_MODE=predictive):
+    1. Montreal in green window          → scale up immediately
+    2. Montreal approaching green window → scale up pre-emptively
+    3. Mumbai is dirty                   → scale up immediately
+    4. Mumbai approaching dirty          → scale up pre-emptively
+    Scale-down hysteresis: requires 2 consecutive polls with no trigger
+    before scaling back to 1 replica — prevents flapping on threshold oscillation.
 
 Environment variables:
   ELECTRICITY_MAPS_API_KEY    API key (required)
@@ -44,7 +49,6 @@ import threading
 import statistics
 from collections import deque
 from datetime import datetime, timezone
-from pathlib import Path
 
 import numpy as np
 import requests
@@ -108,8 +112,10 @@ _fallback = {
     "montreal": None,
 }
 
-_state_lock          = threading.Lock()
-_currently_scaled_up = False
+_state_lock           = threading.Lock()
+_currently_scaled_up  = False
+_scale_down_counter   = 0   # hysteresis: require 2 consecutive false polls before scaling down
+SCALE_DOWN_THRESHOLD  = 2   # number of consecutive false polls required to scale down
 
 # ── Electricity Maps API ──────────────────────────────────────────────────────
 
@@ -142,12 +148,16 @@ def compute_montreal_thresholds(history: deque) -> dict | None:
     if len(history) < 2:
         return None
     values = [v for _, v in history]
+    p25    = float(np.percentile(values, 25))
     h_min  = min(values)
-    h_std  = statistics.stdev(values) if len(values) > 1 else 0.0
+    h_max  = max(values)
+    h_mean = statistics.mean(values)
     return {
-        "green_threshold": round(h_min + h_std, 2),
+        "green_threshold": round(p25, 2),
+        "history_p25":     round(p25, 2),
         "history_min":     round(h_min, 2),
-        "history_std":     round(h_std, 2),
+        "history_max":     round(h_max, 2),
+        "history_mean":    round(h_mean, 2),
         "history_size":    len(values),
     }
 
@@ -156,31 +166,98 @@ def compute_mumbai_thresholds(history: deque) -> dict | None:
     if len(history) < 2:
         return None
     values = [v for _, v in history]
-    mean   = statistics.mean(values)
-    std    = statistics.stdev(values) if len(values) > 1 else 0.0
+    p75    = float(np.percentile(values, 75))
+    h_min  = min(values)
+    h_max  = max(values)
+    h_mean = statistics.mean(values)
     return {
-        "migration_threshold": round(mean, 2),
-        "history_mean":        round(mean, 2),
-        "history_std":         round(std, 2),
+        "migration_threshold": round(p75, 2),
+        "history_p75":         round(p75, 2),
+        "history_min":         round(h_min, 2),
+        "history_max":         round(h_max, 2),
+        "history_mean":        round(h_mean, 2),
         "history_size":        len(values),
     }
 
-# ── Green window approach detection ──────────────────────────────────────────
+# ── Approach detection ────────────────────────────────────────────────────────
+
+def _compute_slope(recent: list) -> float:
+    """Compute slope of recent readings via linear regression. Returns Python float."""
+    x = np.arange(len(recent), dtype=float)
+    y = np.array(recent, dtype=float)
+    return float(np.polyfit(x, y, 1)[0])
+
 
 def is_green_window_approaching(history: deque, green_threshold: float) -> bool:
+    """
+    Predict whether Montreal is about to enter a green window.
+
+    Conditions (all must be true):
+        1. Proximity: current intensity within 5% above green_threshold
+           i.e. current <= green_threshold * 1.05
+        2. Sustained trend: short-term slope (last 6 readings) is flat or negative
+        3. Latest movement: current reading is below or equal to previous reading
+           (avoids pre-scaling after the falling trend has already reversed)
+
+    Returns plain Python bool — safe for JSON serialization.
+    """
     if len(history) < 6:
         return False
-    recent  = [v for _, v in list(history)[-6:]]
-    current = recent[-1]
-    near_threshold = current <= green_threshold * 1.15
-    slope          = np.polyfit(np.arange(len(recent)), recent, 1)[0]
-    not_rising     = slope <= 0
-    if near_threshold and not_rising:
+
+    recent   = [float(v) for _, v in list(history)[-6:]]
+    current  = recent[-1]
+    previous = recent[-2]
+
+    near_threshold   = bool(current <= green_threshold * 1.05)
+    slope            = _compute_slope(recent)
+    trend_falling    = bool(slope <= 0)
+    latest_falling   = bool(current <= previous)
+
+    if near_threshold and trend_falling and latest_falling:
         log.info(
-            "Green window approaching: current=%.1f threshold=%.1f slope=%.3f",
+            "Green window approaching: current=%.1f threshold=%.1f slope=%.3f proximity=5%%",
             current, green_threshold, slope,
         )
-    return near_threshold and not_rising
+
+    return near_threshold and trend_falling and latest_falling
+
+
+def is_mumbai_approaching_dirty(history: deque, migration_threshold: float) -> bool:
+    """
+    Predict whether Mumbai is about to become dirty.
+
+    Conditions (all must be true):
+        1. Proximity: current intensity within 3% below migration_threshold
+           i.e. current >= migration_threshold * 0.97
+        2. Sustained trend: short-term slope (last 6 readings) is positive (rising)
+        3. Latest movement: current reading is above or equal to previous reading
+           (avoids pre-scaling after the rising trend has already reversed)
+
+    When Mumbai goes dirty, all batch jobs redirect to Montreal.
+    Pre-scaling Montreal before this happens eliminates the reactive
+    scaling delay (metric lag + HPA reaction time + worker startup).
+
+    Returns plain Python bool — safe for JSON serialization.
+    """
+    if len(history) < 6:
+        return False
+
+    recent   = [float(v) for _, v in list(history)[-6:]]
+    current  = recent[-1]
+    previous = recent[-2]
+
+    near_threshold  = bool(current >= migration_threshold * 0.97)
+    slope           = _compute_slope(recent)
+    trend_rising    = bool(slope > 0)
+    latest_rising   = bool(current >= previous)
+
+    if near_threshold and trend_rising and latest_rising:
+        log.info(
+            "Mumbai approaching dirty: current=%.1f threshold=%.1f slope=%.3f proximity=3%%",
+            current, migration_threshold, slope,
+        )
+
+    return near_threshold and trend_rising and latest_rising
 
 # ── Kubernetes scaling ────────────────────────────────────────────────────────
 
@@ -188,7 +265,6 @@ def scale_montreal_worker(replicas: int) -> None:
     """
     Scale Montreal worker deployment using Kubernetes Python client.
     Uses Workload Identity — no key files needed.
-    Connects to Montreal cluster via GKE API endpoint.
     """
     global _currently_scaled_up
     if replicas > 1 and _currently_scaled_up:
@@ -199,16 +275,13 @@ def scale_montreal_worker(replicas: int) -> None:
         from google.cloud import container_v1
         from google.auth import default as google_auth_default
         from google.auth.transport.requests import Request
-        import google.auth
         from kubernetes import client as k8s_client
 
-        # Get Montreal cluster endpoint
         cluster_client = container_v1.ClusterManagerClient()
         cluster = cluster_client.get_cluster(
             name=f"projects/{PROJECT_ID}/locations/northamerica-northeast1-a/clusters/gcp-montreal"
         )
 
-        # Build k8s client with GCP credentials
         credentials, _ = google_auth_default(
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
@@ -236,39 +309,60 @@ def scale_montreal_worker(replicas: int) -> None:
 # ── State builders ────────────────────────────────────────────────────────────
 
 def compute_mumbai_state(intensity: float) -> dict:
+    """
+    Compute Mumbai state dict with all values as JSON-serializable Python types.
+    All booleans explicitly cast with bool() to avoid numpy.bool_ issues.
+    """
     t = compute_mumbai_thresholds(_history["mumbai"])
     if t is None:
         return {
-            "current_intensity":   round(intensity, 2),
+            "current_intensity":   round(float(intensity), 2),
             "migration_threshold": None,
             "is_dirty":            None,
+            "approaching_dirty":   None,
             "warming_up":          True,
         }
+
+    is_dirty        = bool(float(intensity) > t["migration_threshold"])
+    approaching_dirty = (
+        False if is_dirty
+        else is_mumbai_approaching_dirty(_history["mumbai"], t["migration_threshold"])
+    )
+
     return {
-        "current_intensity":   round(intensity, 2),
+        "current_intensity":   round(float(intensity), 2),
         "migration_threshold": t["migration_threshold"],
-        "is_dirty":            intensity > t["migration_threshold"],
+        "is_dirty":            bool(is_dirty),
+        "approaching_dirty":   bool(approaching_dirty),
+        "history_p75":         t["history_p75"],
+        "history_min":         t["history_min"],
+        "history_max":         t["history_max"],
         "history_mean":        t["history_mean"],
-        "history_std":         t["history_std"],
-        "history_size":        t["history_size"],
+        "history_size":        int(t["history_size"]),
         "warming_up":          False,
     }
 
 
 def compute_montreal_state(intensity: float) -> dict:
+    """
+    Compute Montreal state dict with all values as JSON-serializable Python types.
+    All booleans explicitly cast with bool() to avoid numpy.bool_ issues.
+    """
     t = compute_montreal_thresholds(_history["montreal"])
     if t is None:
         return {
-            "current_intensity": round(intensity, 2),
+            "current_intensity": round(float(intensity), 2),
             "green_threshold":   None,
             "in_green_window":   None,
             "approaching":       None,
             "warming_up":        True,
         }
+
     green_threshold = t["green_threshold"]
 
     # Check simulation override
-    sim_active = _simulation["active"] and time.time() < _simulation["until"]
+    sim_active = bool(_simulation["active"] and time.time() < _simulation["until"])
+
     if sim_active and _simulation["type"] == "green_window":
         in_green_window = True
         approaching     = False
@@ -279,22 +373,24 @@ def compute_montreal_state(intensity: float) -> dict:
         log.info("SIMULATION: forcing approaching=True")
     else:
         _simulation["active"] = False  # expired
-        in_green_window = intensity <= green_threshold
+        in_green_window = bool(float(intensity) <= green_threshold)
         approaching     = (
             False if in_green_window
             else is_green_window_approaching(_history["montreal"], green_threshold)
         )
 
     return {
-        "current_intensity": round(intensity, 2),
+        "current_intensity": round(float(intensity), 2),
         "green_threshold":   green_threshold,
-        "in_green_window":   in_green_window,
-        "approaching":       approaching,
+        "in_green_window":   bool(in_green_window),
+        "approaching":       bool(approaching),
+        "history_p25":       t["history_p25"],
         "history_min":       t["history_min"],
-        "history_std":       t["history_std"],
-        "history_size":      t["history_size"],
+        "history_max":       t["history_max"],
+        "history_mean":      t["history_mean"],
+        "history_size":      int(t["history_size"]),
         "warming_up":        False,
-        "simulated":         sim_active,
+        "simulated":         bool(sim_active),
     }
 
 # ── Startup: load 24h history immediately ────────────────────────────────────
@@ -305,8 +401,8 @@ def load_history_on_startup() -> None:
         try:
             readings = fetch_history(zone)
             for ts, intensity in readings:
-                _history[region].append((ts, intensity))
-            _fallback[region] = readings[-1][1] if readings else None
+                _history[region].append((ts, float(intensity)))
+            _fallback[region] = float(readings[-1][1]) if readings else None
             log.info(
                 "Loaded %d historical readings for %s (range %.0f-%.0f gCO2/kWh)",
                 len(readings), region,
@@ -324,7 +420,7 @@ def poll_once() -> None:
 
     for region, zone in ZONES.items():
         try:
-            intensity           = fetch_live(zone)
+            intensity           = float(fetch_live(zone))
             _history[region].append((now_utc_iso(), intensity))
             _fallback[region]   = intensity
             results[region]     = intensity
@@ -333,7 +429,7 @@ def poll_once() -> None:
             log.warning("Failed to fetch live %s: %s — using fallback", region, e)
             errors.append(str(e))
             if _fallback[region] is not None:
-                results[region] = _fallback[region]
+                results[region] = float(_fallback[region])
             else:
                 log.error("No fallback for %s — skipping", region)
                 return
@@ -345,10 +441,36 @@ def poll_once() -> None:
         _state["error"]        = errors if errors else None
 
     if SCALING_MODE == "predictive":
+        global _scale_down_counter
         montreal = _state["montreal"]
+        mumbai   = _state["mumbai"]
         if montreal and not montreal.get("warming_up"):
-            should_scale = montreal["in_green_window"] or montreal["approaching"]
-            scale_montreal_worker(PREDICTIVE_REPLICAS if should_scale else 1)
+            should_scale = bool(
+                montreal.get("in_green_window", False) or
+                montreal.get("approaching", False) or
+                mumbai.get("is_dirty", False) or
+                mumbai.get("approaching_dirty", False)
+            )
+            if should_scale:
+                # Scale up immediately — reset hysteresis counter
+                _scale_down_counter = 0
+                scale_montreal_worker(PREDICTIVE_REPLICAS)
+            else:
+                # Scale down only after SCALE_DOWN_THRESHOLD consecutive false polls
+                # Prevents flapping when intensity oscillates around the threshold
+                _scale_down_counter += 1
+                if _scale_down_counter >= SCALE_DOWN_THRESHOLD:
+                    log.info(
+                        "Scale-down hysteresis satisfied (%d/%d) — scaling to 1",
+                        _scale_down_counter, SCALE_DOWN_THRESHOLD,
+                    )
+                    scale_montreal_worker(1)
+                else:
+                    log.info(
+                        "Scale-down hysteresis: %d/%d polls without trigger — holding at %d replicas",
+                        _scale_down_counter, SCALE_DOWN_THRESHOLD,
+                        PREDICTIVE_REPLICAS if _currently_scaled_up else 1,
+                    )
 
 
 def poller_loop() -> None:
@@ -401,10 +523,8 @@ def simulate_green_window():
     _simulation["until"]  = time.time() + duration
     _simulation["type"]   = sim_type
 
-    log.info(
-        "Simulation started: type=%s duration=%ds",
-        sim_type, duration,
-    )
+    log.info("Simulation started: type=%s duration=%ds", sim_type, duration)
+
     return jsonify({
         "status":       "ok",
         "type":         sim_type,
@@ -417,10 +537,10 @@ def simulate_green_window():
 
 @app.route("/admin/simulation-status", methods=["GET"])
 def simulation_status():
-    active = _simulation["active"] and time.time() < _simulation["until"]
+    active = bool(_simulation["active"] and time.time() < _simulation["until"])
     return jsonify({
-        "active":           active,
-        "type":             _simulation["type"] if active else None,
+        "active":            active,
+        "type":              _simulation["type"] if active else None,
         "remaining_seconds": max(0, int(_simulation["until"] - time.time())) if active else 0,
     })
 
