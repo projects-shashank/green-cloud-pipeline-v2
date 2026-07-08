@@ -188,6 +188,58 @@ def _compute_slope(recent: list) -> float:
     return float(np.polyfit(x, y, 1)[0])
 
 
+def get_hourly_samples(history: deque, n: int = 5) -> list:
+    """
+    Get n evenly-spaced hourly intensity samples from history.
+
+    Takes one reading per hour going back n hours from now.
+    Finds the history entry closest to each target timestamp.
+
+    This gives a time-aware trend signal that works correctly even when
+    intensity stays flat for multiple hours — unlike last-N-polls which
+    returns repeated values, or distinct-values which collapses flat periods
+    into a single point.
+
+    Example (n=5, flat for last 2 hours then falling):
+        5h ago: 50
+        4h ago: 49
+        3h ago: 48
+        2h ago: 46  ← flat starts
+        1h ago: 46  ← flat
+        slope = negative (correctly shows falling 5h trend)
+
+    Returns list of float intensities, oldest first.
+    Returns empty list if history has fewer than 2 entries.
+    """
+    if len(history) < 2:
+        return []
+
+    now     = time.time()
+    entries = list(history)  # list of (timestamp_str, intensity)
+    samples = []
+
+    for hour in range(n, 0, -1):
+        target = now - (hour * 3600)
+        # Find entry with timestamp closest to target
+        closest = min(
+            entries,
+            key=lambda e: abs(_parse_timestamp(e[0]) - target)
+        )
+        samples.append(float(closest[1]))
+
+    return samples
+
+
+def _parse_timestamp(ts: str) -> float:
+    """Parse ISO timestamp string to Unix epoch float."""
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt.timestamp()
+    except Exception:
+        return 0.0
+
+
 def is_green_window_approaching(history: deque, green_threshold: float) -> bool:
     """
     Predict whether Montreal is about to enter a green window.
@@ -195,28 +247,41 @@ def is_green_window_approaching(history: deque, green_threshold: float) -> bool:
     Conditions (all must be true):
         1. Proximity: current intensity within 5% above green_threshold
            i.e. current <= green_threshold * 1.05
-        2. Sustained trend: short-term slope (last 6 readings) is flat or negative
-        3. Latest movement: current reading is below or equal to previous reading
-           (avoids pre-scaling after the falling trend has already reversed)
+        2. Sustained trend: slope across last 5 hourly samples is negative
+           Uses time-aware hourly sampling — not affected by flat within-hour polls
+        3. Latest movement: current live reading <= reading 1 hour ago
+           Confirms the trend hasn't reversed in the most recent hour
 
     Returns plain Python bool — safe for JSON serialization.
     """
-    if len(history) < 6:
+    # Get current live intensity (most recent entry)
+    if len(history) < 2:
         return False
 
-    recent   = [float(v) for _, v in list(history)[-6:]]
-    current  = recent[-1]
-    previous = recent[-2]
+    current = float(list(history)[-1][1])
 
-    near_threshold   = bool(current <= green_threshold * 1.05)
-    slope            = _compute_slope(recent)
-    trend_falling    = bool(slope <= 0)
-    latest_falling   = bool(current <= previous)
+    # Proximity check first — skip expensive sampling if not near threshold
+    near_threshold = bool(current <= green_threshold * 1.05)
+    if not near_threshold:
+        return False
+
+    # Get 5 hourly samples for slope
+    samples = get_hourly_samples(history, n=5)
+    if len(samples) < 2:
+        return False
+
+    slope         = _compute_slope(samples)
+    trend_falling = bool(slope <= 0)
+
+    # Latest movement: current vs 1 hour ago
+    one_hour_ago  = samples[-1]  # closest sample to 1 hour ago
+    latest_falling = bool(current <= one_hour_ago)
 
     if near_threshold and trend_falling and latest_falling:
         log.info(
-            "Green window approaching: current=%.1f threshold=%.1f slope=%.3f proximity=5%%",
-            current, green_threshold, slope,
+            "Green window approaching: current=%.1f threshold=%.1f "
+            "slope=%.3f hourly_samples=%s proximity=5%%",
+            current, green_threshold, slope, samples,
         )
 
     return near_threshold and trend_falling and latest_falling
@@ -229,9 +294,10 @@ def is_mumbai_approaching_dirty(history: deque, migration_threshold: float) -> b
     Conditions (all must be true):
         1. Proximity: current intensity within 3% below migration_threshold
            i.e. current >= migration_threshold * 0.97
-        2. Sustained trend: short-term slope (last 6 readings) is positive (rising)
-        3. Latest movement: current reading is above or equal to previous reading
-           (avoids pre-scaling after the rising trend has already reversed)
+        2. Sustained trend: slope across last 5 hourly samples is positive (rising)
+           Uses time-aware hourly sampling — not affected by flat within-hour polls
+        3. Latest movement: current live reading >= reading 1 hour ago
+           Confirms the trend hasn't reversed in the most recent hour
 
     When Mumbai goes dirty, all batch jobs redirect to Montreal.
     Pre-scaling Montreal before this happens eliminates the reactive
@@ -239,22 +305,34 @@ def is_mumbai_approaching_dirty(history: deque, migration_threshold: float) -> b
 
     Returns plain Python bool — safe for JSON serialization.
     """
-    if len(history) < 6:
+    # Get current live intensity (most recent entry)
+    if len(history) < 2:
         return False
 
-    recent   = [float(v) for _, v in list(history)[-6:]]
-    current  = recent[-1]
-    previous = recent[-2]
+    current = float(list(history)[-1][1])
 
-    near_threshold  = bool(current >= migration_threshold * 0.97)
-    slope           = _compute_slope(recent)
-    trend_rising    = bool(slope > 0)
-    latest_rising   = bool(current >= previous)
+    # Proximity check first — skip expensive sampling if not near threshold
+    near_threshold = bool(current >= migration_threshold * 0.97)
+    if not near_threshold:
+        return False
+
+    # Get 5 hourly samples for slope
+    samples = get_hourly_samples(history, n=5)
+    if len(samples) < 2:
+        return False
+
+    slope        = _compute_slope(samples)
+    trend_rising = bool(slope > 0)
+
+    # Latest movement: current vs 1 hour ago
+    one_hour_ago  = samples[-1]  # closest sample to 1 hour ago
+    latest_rising = bool(current >= one_hour_ago)
 
     if near_threshold and trend_rising and latest_rising:
         log.info(
-            "Mumbai approaching dirty: current=%.1f threshold=%.1f slope=%.3f proximity=3%%",
-            current, migration_threshold, slope,
+            "Mumbai approaching dirty: current=%.1f threshold=%.1f "
+            "slope=%.3f hourly_samples=%s proximity=3%%",
+            current, migration_threshold, slope, samples,
         )
 
     return near_threshold and trend_rising and latest_rising
