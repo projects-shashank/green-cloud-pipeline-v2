@@ -261,47 +261,86 @@ def is_mumbai_approaching_dirty(history: deque, migration_threshold: float) -> b
 
 # ── Kubernetes scaling ────────────────────────────────────────────────────────
 
+def _get_k8s_clients():
+    """
+    Build and return (apps_v1, cluster_endpoint) using Workload Identity.
+    Shared by get_current_replicas and scale_montreal_worker.
+    """
+    from google.cloud import container_v1
+    from google.auth import default as google_auth_default
+    from google.auth.transport.requests import Request
+    from kubernetes import client as k8s_client
+
+    cluster_client = container_v1.ClusterManagerClient()
+    cluster = cluster_client.get_cluster(
+        name=f"projects/{PROJECT_ID}/locations/northamerica-northeast1-a/clusters/gcp-montreal"
+    )
+    credentials, _ = google_auth_default(
+        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+    )
+    credentials.refresh(Request())
+
+    configuration = k8s_client.Configuration()
+    configuration.host        = f"https://{cluster.endpoint}"
+    configuration.verify_ssl  = False
+    configuration.api_key     = {"authorization": f"Bearer {credentials.token}"}
+
+    api_client = k8s_client.ApiClient(configuration)
+    return k8s_client.AppsV1Api(api_client)
+
+
+def get_current_replicas() -> int:
+    """
+    Read actual replica count from Kubernetes API.
+    Avoids relying on in-memory state which resets on forecaster restart.
+    Falls back to _currently_scaled_up if API call fails.
+    """
+    global _currently_scaled_up
+    try:
+        apps_v1 = _get_k8s_clients()
+        deployment = apps_v1.read_namespaced_deployment(
+            name=MONTREAL_DEPLOYMENT,
+            namespace=MONTREAL_NAMESPACE,
+        )
+        actual = deployment.spec.replicas
+        # Sync in-memory state with actual state
+        _currently_scaled_up = actual > 1
+        return actual
+    except Exception as e:
+        log.warning("Could not read current replicas: %s — using in-memory state", e)
+        return PREDICTIVE_REPLICAS if _currently_scaled_up else 1
+
+
 def scale_montreal_worker(replicas: int) -> None:
     """
     Scale Montreal worker deployment using Kubernetes Python client.
     Uses Workload Identity — no key files needed.
+
+    Reads actual replica count from Kubernetes before deciding to act —
+    prevents state drift after forecaster restarts.
     """
     global _currently_scaled_up
-    if replicas > 1 and _currently_scaled_up:
-        return
-    if replicas == 1 and not _currently_scaled_up:
-        return
     try:
-        from google.cloud import container_v1
-        from google.auth import default as google_auth_default
-        from google.auth.transport.requests import Request
-        from kubernetes import client as k8s_client
-
-        cluster_client = container_v1.ClusterManagerClient()
-        cluster = cluster_client.get_cluster(
-            name=f"projects/{PROJECT_ID}/locations/northamerica-northeast1-a/clusters/gcp-montreal"
-        )
-
-        credentials, _ = google_auth_default(
-            scopes=["https://www.googleapis.com/auth/cloud-platform"]
-        )
-        credentials.refresh(Request())
-
-        configuration = k8s_client.Configuration()
-        configuration.host = f"https://{cluster.endpoint}"
-        configuration.verify_ssl = False
-        configuration.api_key = {"authorization": f"Bearer {credentials.token}"}
-
-        with k8s_client.ApiClient(configuration) as api_client:
-            apps_v1 = k8s_client.AppsV1Api(api_client)
-            body = {"spec": {"replicas": replicas}}
-            apps_v1.patch_namespaced_deployment_scale(
-                name=MONTREAL_DEPLOYMENT,
-                namespace=MONTREAL_NAMESPACE,
-                body=body,
+        current = get_current_replicas()
+        if current == replicas:
+            log.info(
+                "Montreal worker already at %d replica(s) — no action needed",
+                replicas,
             )
-            log.info("Scaled Montreal worker to %d replicas", replicas)
-            _currently_scaled_up = replicas > 1
+            return
+
+        apps_v1 = _get_k8s_clients()
+        body = {"spec": {"replicas": replicas}}
+        apps_v1.patch_namespaced_deployment_scale(
+            name=MONTREAL_DEPLOYMENT,
+            namespace=MONTREAL_NAMESPACE,
+            body=body,
+        )
+        _currently_scaled_up = replicas > 1
+        log.info(
+            "Scaled Montreal worker from %d → %d replicas",
+            current, replicas,
+        )
 
     except Exception as e:
         log.error("Exception scaling Montreal worker: %s", e)
@@ -465,7 +504,6 @@ def poll_once() -> None:
                         _scale_down_counter, SCALE_DOWN_THRESHOLD,
                     )
                     scale_montreal_worker(1)
-                    _scale_down_counter = 0  # reset after scale-down executed
                 else:
                     log.info(
                         "Scale-down hysteresis: %d/%d polls without trigger — holding at %d replicas",
