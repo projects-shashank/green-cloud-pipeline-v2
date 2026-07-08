@@ -504,6 +504,7 @@ def poll_once() -> None:
                         _scale_down_counter, SCALE_DOWN_THRESHOLD,
                     )
                     scale_montreal_worker(1)
+                    _scale_down_counter = 0  # reset after scale-down executed
                 else:
                     log.info(
                         "Scale-down hysteresis: %d/%d polls without trigger — holding at %d replicas",
