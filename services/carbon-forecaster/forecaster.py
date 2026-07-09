@@ -7,6 +7,18 @@ On startup:
   3. Fetches live current intensity
   4. Starts polling every POLL_INTERVAL seconds to keep data fresh
 
+Every poll cycle:
+  1. Fetches live current intensity for both regions
+  2. Fetches fresh 24h history for both regions
+  3. Computes thresholds (p75 Mumbai, p25 Montreal) from fresh 24h history
+  4. Computes slope from fresh 24h history using hourly samples
+  5. Makes routing and scaling decisions
+
+Design principle:
+  - Live polls provide current intensity only
+  - 24h history is always fetched fresh — never mixed with live polls
+  - Thresholds and slope always reflect the true 24h distribution
+
 Green window definition (Montreal):
     green_threshold = p25(24h history)
     if current <= green_threshold → in green window
@@ -85,7 +97,7 @@ ZONES = {
     "montreal": "CA-QC",
 }
 
-HISTORY_SIZE = 288  # 24h at 5min intervals
+HISTORY_SIZE = 24  # 24h hourly readings
 
 # ── State ─────────────────────────────────────────────────────────────────────
 
@@ -95,9 +107,12 @@ _simulation = {
     "type":   None,
 }
 
-_history = {
-    "mumbai":   deque(maxlen=HISTORY_SIZE),
-    "montreal": deque(maxlen=HISTORY_SIZE),
+# _24h_history: fresh 24h hourly readings fetched on every poll
+# Used ONLY for threshold computation and slope calculation
+# Never mixed with live poll data
+_24h_history = {
+    "mumbai":   [],
+    "montreal": [],
 }
 
 _state = {
@@ -144,7 +159,7 @@ def fetch_history(zone: str) -> list:
 
 # ── Threshold computation ─────────────────────────────────────────────────────
 
-def compute_montreal_thresholds(history: deque) -> dict | None:
+def compute_montreal_thresholds(history: list) -> dict | None:
     if len(history) < 2:
         return None
     values = [v for _, v in history]
@@ -162,7 +177,7 @@ def compute_montreal_thresholds(history: deque) -> dict | None:
     }
 
 
-def compute_mumbai_thresholds(history: deque) -> dict | None:
+def compute_mumbai_thresholds(history: list) -> dict | None:
     if len(history) < 2:
         return None
     values = [v for _, v in history]
@@ -188,7 +203,7 @@ def _compute_slope(recent: list) -> float:
     return float(np.polyfit(x, y, 1)[0])
 
 
-def get_hourly_samples(history: deque, n: int = 5) -> list:
+def get_hourly_samples(history: list, n: int = 5) -> list:
     """
     Get n evenly-spaced hourly intensity samples from history.
 
@@ -215,7 +230,7 @@ def get_hourly_samples(history: deque, n: int = 5) -> list:
         return []
 
     now     = time.time()
-    entries = list(history)  # list of (timestamp_str, intensity)
+    entries = history  # already a list of (timestamp_str, intensity)
     samples = []
 
     for hour in range(n, 0, -1):
@@ -240,7 +255,7 @@ def _parse_timestamp(ts: str) -> float:
         return 0.0
 
 
-def is_green_window_approaching(history: deque, green_threshold: float) -> bool:
+def is_green_window_approaching(history: list, green_threshold: float) -> bool:
     """
     Predict whether Montreal is about to enter a green window.
 
@@ -258,7 +273,7 @@ def is_green_window_approaching(history: deque, green_threshold: float) -> bool:
     if len(history) < 2:
         return False
 
-    current = float(list(history)[-1][1])
+    current = float(history[-1][1])
 
     # Proximity check first — skip expensive sampling if not near threshold
     near_threshold = bool(current <= green_threshold * 1.05)
@@ -287,7 +302,7 @@ def is_green_window_approaching(history: deque, green_threshold: float) -> bool:
     return near_threshold and trend_falling and latest_falling
 
 
-def is_mumbai_approaching_dirty(history: deque, migration_threshold: float) -> bool:
+def is_mumbai_approaching_dirty(history: list, migration_threshold: float) -> bool:
     """
     Predict whether Mumbai is about to become dirty.
 
@@ -309,7 +324,7 @@ def is_mumbai_approaching_dirty(history: deque, migration_threshold: float) -> b
     if len(history) < 2:
         return False
 
-    current = float(list(history)[-1][1])
+    current = float(history[-1][1])
 
     # Proximity check first — skip expensive sampling if not near threshold
     near_threshold = bool(current >= migration_threshold * 0.97)
@@ -428,9 +443,10 @@ def scale_montreal_worker(replicas: int) -> None:
 def compute_mumbai_state(intensity: float) -> dict:
     """
     Compute Mumbai state dict with all values as JSON-serializable Python types.
+    Uses fresh 24h history for threshold and slope — never mixed with live polls.
     All booleans explicitly cast with bool() to avoid numpy.bool_ issues.
     """
-    t = compute_mumbai_thresholds(_history["mumbai"])
+    t = compute_mumbai_thresholds(_24h_history["mumbai"])
     if t is None:
         return {
             "current_intensity":   round(float(intensity), 2),
@@ -443,7 +459,7 @@ def compute_mumbai_state(intensity: float) -> dict:
     is_dirty        = bool(float(intensity) > t["migration_threshold"])
     approaching_dirty = (
         False if is_dirty
-        else is_mumbai_approaching_dirty(_history["mumbai"], t["migration_threshold"])
+        else is_mumbai_approaching_dirty(_24h_history["mumbai"], t["migration_threshold"])
     )
 
     return {
@@ -463,9 +479,10 @@ def compute_mumbai_state(intensity: float) -> dict:
 def compute_montreal_state(intensity: float) -> dict:
     """
     Compute Montreal state dict with all values as JSON-serializable Python types.
+    Uses fresh 24h history for threshold and slope — never mixed with live polls.
     All booleans explicitly cast with bool() to avoid numpy.bool_ issues.
     """
-    t = compute_montreal_thresholds(_history["montreal"])
+    t = compute_montreal_thresholds(_24h_history["montreal"])
     if t is None:
         return {
             "current_intensity": round(float(intensity), 2),
@@ -493,7 +510,7 @@ def compute_montreal_state(intensity: float) -> dict:
         in_green_window = bool(float(intensity) <= green_threshold)
         approaching     = (
             False if in_green_window
-            else is_green_window_approaching(_history["montreal"], green_threshold)
+            else is_green_window_approaching(_24h_history["montreal"], green_threshold)
         )
 
     return {
@@ -512,22 +529,35 @@ def compute_montreal_state(intensity: float) -> dict:
 
 # ── Startup: load 24h history immediately ────────────────────────────────────
 
-def load_history_on_startup() -> None:
-    log.info("Loading 24h history on startup...")
+def fetch_and_store_history() -> dict:
+    """
+    Fetch fresh 24h hourly history for both regions.
+    Returns dict of {region: [(timestamp, intensity), ...]}
+    Stores result in _24h_history for threshold and slope computation.
+    Called at startup AND on every poll cycle.
+    """
+    fresh = {}
     for region, zone in ZONES.items():
         try:
             readings = fetch_history(zone)
-            for ts, intensity in readings:
-                _history[region].append((ts, float(intensity)))
-            _fallback[region] = float(readings[-1][1]) if readings else None
+            _24h_history[region] = readings
+            _fallback[region]    = float(readings[-1][1]) if readings else None
+            fresh[region]        = readings
             log.info(
-                "Loaded %d historical readings for %s (range %.0f-%.0f gCO2/kWh)",
-                len(readings), region,
+                "History %s: %d readings (range %.0f-%.0f gCO2/kWh)",
+                region, len(readings),
                 min(r[1] for r in readings),
                 max(r[1] for r in readings),
             )
         except Exception as e:
-            log.error("Failed to load history for %s: %s", region, e)
+            log.warning("Failed to fetch history for %s: %s — using previous", region, e)
+            fresh[region] = _24h_history.get(region, [])
+    return fresh
+
+
+def load_history_on_startup() -> None:
+    log.info("Loading 24h history on startup...")
+    fetch_and_store_history()
 
 # ── Poller ────────────────────────────────────────────────────────────────────
 
@@ -535,12 +565,17 @@ def poll_once() -> None:
     results = {}
     errors  = []
 
+    # Step 1: Fetch fresh 24h history for thresholds and slope
+    # This runs on every poll — ensures thresholds always reflect
+    # the true 24h distribution, never contaminated by live polls
+    fetch_and_store_history()
+
+    # Step 2: Fetch live current intensity for routing decisions
     for region, zone in ZONES.items():
         try:
-            intensity           = float(fetch_live(zone))
-            _history[region].append((now_utc_iso(), intensity))
-            _fallback[region]   = intensity
-            results[region]     = intensity
+            intensity         = float(fetch_live(zone))
+            _fallback[region] = intensity
+            results[region]   = intensity
             log.info("Live %s: %.1f gCO2/kWh", region, intensity)
         except Exception as e:
             log.warning("Failed to fetch live %s: %s — using fallback", region, e)
@@ -551,6 +586,7 @@ def poll_once() -> None:
                 log.error("No fallback for %s — skipping", region)
                 return
 
+    # Step 3: Compute state using live intensity + fresh 24h history
     with _state_lock:
         _state["mumbai"]       = compute_mumbai_state(results["mumbai"])
         _state["montreal"]     = compute_montreal_state(results["montreal"])
