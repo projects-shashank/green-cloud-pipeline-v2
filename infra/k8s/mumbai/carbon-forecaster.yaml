@@ -28,7 +28,7 @@ spec:
         - name: PROJECT_ID
           value: "green-cloud-pipeline-v2"
         - name: SCALING_MODE
-          value: "reactive"
+          value: "predictive"
         - name: POLL_INTERVAL_SECONDS
           value: "300"
         - name: PORT
