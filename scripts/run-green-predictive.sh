@@ -55,8 +55,8 @@ kubectl rollout status deployment/redis            -n green-cloud --timeout=180s
 kubectl rollout status deployment/carbon-forecaster -n green-cloud --timeout=180s
 kubectl rollout status deployment/worker-montreal  -n green-cloud --timeout=180s
 
-echo "All workers running. Waiting 60s for Pub/Sub streaming pulls to establish..."
-sleep 60
+echo "All workers running. Waiting 5m for Pub/Sub streaming pulls to establish..."
+sleep 300
 
 # ── Step 3: Start BOTH generators simultaneously ──────────────────────────────
 echo "Starting job generators on both clusters simultaneously..."
